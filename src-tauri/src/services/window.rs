@@ -13,9 +13,11 @@ pub async fn set_dock_visibility(app: AppHandle, visible: bool) -> Result<(), St
     {
         use tauri::ActivationPolicy;
         if visible {
-            let _ = app.set_activation_policy(ActivationPolicy::Regular);
+            app.set_activation_policy(ActivationPolicy::Regular)
+                .map_err(|e| e.to_string())?;
         } else {
-            let _ = app.set_activation_policy(ActivationPolicy::Accessory);
+            app.set_activation_policy(ActivationPolicy::Accessory)
+                .map_err(|e| e.to_string())?;
         }
     }
     Ok(())

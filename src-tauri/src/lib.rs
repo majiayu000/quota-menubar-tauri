@@ -26,7 +26,7 @@ pub fn run() {
             {
                 use tauri::ActivationPolicy;
                 // Default to visible Dock; user can toggle to Accessory from UI.
-                let _ = app.set_activation_policy(ActivationPolicy::Regular);
+                app.set_activation_policy(ActivationPolicy::Regular);
             }
 
             services::tray::setup_tray(app.handle())?;
