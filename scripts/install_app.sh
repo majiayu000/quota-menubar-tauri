@@ -6,7 +6,7 @@ APP_SRC="$ROOT/src-tauri/target/release/bundle/macos/Quota Menubar Tauri.app"
 APP_DST="/Applications/Quota Menubar Tauri.app"
 
 if [[ ! -d "$APP_SRC" ]]; then
-  echo "App bundle not found. Build it first: npm run tauri build -- --bundles app" >&2
+  echo "App bundle not found. Build it first: bun run tauri build --bundles app" >&2
   exit 1
 fi
 

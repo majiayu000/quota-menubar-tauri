@@ -40,21 +40,21 @@ Tauri v2 menubar app for monitoring Claude and Codex quota usage on macOS.
 ## Requirements
 
 - macOS (menubar target)
-- Node.js + npm
+- Bun (recommended package manager/runtime)
 - Rust toolchain
 - Tauri prerequisites installed
 
 ## Development
 
 ```bash
-npm install
-npm run tauri dev
+bun install
+bun run tauri dev
 ```
 
 ## Build
 
 ```bash
-npm run tauri build -- --bundles app
+bun run tauri build --bundles app
 ```
 
 App bundle output:
@@ -78,7 +78,7 @@ Or one-shot restart after rebuild:
 ## Verification Commands
 
 ```bash
-npm run build
+bun run build
 cd src-tauri && cargo check
 cd src-tauri && cargo test
 ```
