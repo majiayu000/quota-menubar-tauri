@@ -13,9 +13,13 @@
     "windows": [
       {
         "title": "Quota Menubar",
-        "width": 360,
-        "height": 280,
+        "width": 320,
+        "minWidth": 280,
+        "height": 200,
+        "minHeight": 100,
         "resizable": false,
+        "decorations": false,
+        "transparent": true,
         "alwaysOnTop": true,
         "visible": false,
         "skipTaskbar": true
