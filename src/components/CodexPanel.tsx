@@ -276,7 +276,7 @@ export default function CodexPanel({ onConnectionChange, onUsageChange }: CodexP
           )}
 
           {/* ChatGPT Link */}
-          <button className="open-chatgpt-btn" onClick={handleOpenDashboard}>
+          <button className="open-dashboard-btn" onClick={handleOpenDashboard}>
             Open Dashboard
           </button>
         </div>

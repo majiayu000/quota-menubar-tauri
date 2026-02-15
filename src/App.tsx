@@ -266,15 +266,18 @@ export default function App() {
         />
 
         <div className="settings-row">
+          <div className="settings-meta">
+            <span className="settings-title">Appearance</span>
+            <label className="dock-toggle">
+              <span className="toggle-label">Hide Dock</span>
+              <input
+                type="checkbox"
+                checked={dockHidden}
+                onChange={handleDockToggle}
+              />
+            </label>
+          </div>
           <ThemeSelector currentTheme={theme} onThemeChange={handleThemeChange} />
-          <label className="dock-toggle">
-            <input
-              type="checkbox"
-              checked={dockHidden}
-              onChange={handleDockToggle}
-            />
-            <span className="toggle-label">Hide Dock</span>
-          </label>
         </div>
 
         {activeTab === 'claude' && (
