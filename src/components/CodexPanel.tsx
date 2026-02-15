@@ -5,6 +5,9 @@ import type { CodexData, CodexRateLimits, CodexStats } from '../types/models';
 interface CodexPanelProps {
   onConnectionChange?: (connected: boolean) => void;
   onUsageChange?: (usedPercent: number | null) => void;
+  autoRefreshIntervalMs?: number;
+  manualRefreshNonce?: number;
+  onLoadingChange?: (loading: boolean) => void;
 }
 
 function formatPlanType(planType?: string): string {
@@ -73,7 +76,13 @@ function getTrayUsedPercent(limits: CodexRateLimits): number | null {
   return null;
 }
 
-export default function CodexPanel({ onConnectionChange, onUsageChange }: CodexPanelProps) {
+export default function CodexPanel({
+  onConnectionChange,
+  onUsageChange,
+  autoRefreshIntervalMs = 15 * 60 * 1000,
+  manualRefreshNonce = 0,
+  onLoadingChange,
+}: CodexPanelProps) {
   const [codexData, setCodexData] = useState<CodexData | null>(null);
   const [codexStats, setCodexStats] = useState<CodexStats | null>(null);
   const [rateLimits, setRateLimits] = useState<CodexRateLimits | null>(null);
@@ -118,10 +127,20 @@ export default function CodexPanel({ onConnectionChange, onUsageChange }: CodexP
 
   useEffect(() => {
     fetchData();
-    // Refresh every 30 seconds
-    const interval = setInterval(fetchData, 30000);
+    // Refresh in background at configured interval.
+    const interval = setInterval(fetchData, autoRefreshIntervalMs);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [fetchData, autoRefreshIntervalMs]);
+
+  useEffect(() => {
+    onLoadingChange?.(loading);
+  }, [loading, onLoadingChange]);
+
+  useEffect(() => {
+    if (manualRefreshNonce > 0) {
+      fetchData();
+    }
+  }, [manualRefreshNonce, fetchData]);
 
   const handleOpenDashboard = async () => {
     try {

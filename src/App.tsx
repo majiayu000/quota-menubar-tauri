@@ -11,6 +11,7 @@ import './styles.css';
 const THEME_STORAGE_KEY = 'claude-quota-theme';
 const DOCK_HIDDEN_KEY = 'claude-quota-dock-hidden';
 const TAB_STORAGE_KEY = 'claude-quota-tab';
+const AUTO_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 
 function getSavedTab(): TabName {
   try {
@@ -85,11 +86,12 @@ export default function App() {
   const [quota, setQuota] = useState<QuotaData | null>(null);
   const [claudeLoading, setClaudeLoading] = useState(false);
   const [claudeError, setClaudeError] = useState<string | null>(null);
-  const [claudeLoaded, setClaudeLoaded] = useState(false);
 
   // Codex state
   const [codexConnected, setCodexConnected] = useState(false);
   const [codexUsedPercent, setCodexUsedPercent] = useState<number | null>(null);
+  const [codexLoading, setCodexLoading] = useState(false);
+  const [codexManualRefreshNonce, setCodexManualRefreshNonce] = useState(0);
 
   // UI state
   const [theme, setTheme] = useState<ThemeName>(getSavedTheme);
@@ -138,7 +140,7 @@ export default function App() {
     }
   }, []);
 
-  // Fetch Claude quota (only when Claude tab is active)
+  // Fetch Claude quota for startup/manual/background refresh.
   const fetchClaudeQuota = useCallback(async () => {
     try {
       setClaudeLoading(true);
@@ -151,7 +153,6 @@ export default function App() {
       } else {
         setQuota(data);
       }
-      setClaudeLoaded(true);
     } catch (err) {
       setClaudeError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -159,21 +160,16 @@ export default function App() {
     }
   }, []);
 
-  // Load Claude data when switching to Claude tab (lazy load)
+  // Load Claude data on startup.
   useEffect(() => {
-    if (activeTab === 'claude' && !claudeLoaded) {
-      fetchClaudeQuota();
-    }
-  }, [activeTab, claudeLoaded, fetchClaudeQuota]);
+    fetchClaudeQuota();
+  }, [fetchClaudeQuota]);
 
-  // Auto-refresh for active tab
+  // Auto-refresh Claude data in background.
   useEffect(() => {
-    if (activeTab === 'claude') {
-      const interval = setInterval(fetchClaudeQuota, 60000);
-      return () => clearInterval(interval);
-    }
-    // Codex panel handles its own refresh
-  }, [activeTab, fetchClaudeQuota]);
+    const interval = setInterval(fetchClaudeQuota, AUTO_REFRESH_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [fetchClaudeQuota]);
 
   // Update tray icon when active tab or data changes
   // Tray icon shows USED percentage.
@@ -202,10 +198,16 @@ export default function App() {
     } catch {}
   }, []);
 
+  // Apply dock visibility from current toggle state on startup and on changes.
+  useEffect(() => {
+    backend.setDockVisibility(!dockHidden).catch((err) => {
+      console.error('Failed to apply dock visibility:', err);
+    });
+  }, [dockHidden]);
+
   const handleDockToggle = useCallback(() => {
     setDockHidden((prev) => {
       const newValue = !prev;
-      backend.setDockVisibility(!newValue).catch(console.error);
       try {
         localStorage.setItem(DOCK_HIDDEN_KEY, String(newValue));
       } catch {}
@@ -223,8 +225,9 @@ export default function App() {
   const handleRefresh = useCallback(() => {
     if (activeTab === 'claude') {
       fetchClaudeQuota();
+      return;
     }
-    // Codex panel handles its own refresh via internal state
+    setCodexManualRefreshNonce((value) => value + 1);
   }, [activeTab, fetchClaudeQuota]);
 
   const handleOpenDashboard = useCallback(async () => {
@@ -353,18 +356,21 @@ export default function App() {
           </>
         )}
 
-        {activeTab === 'codex' && (
+        <div style={{ display: activeTab === 'codex' ? 'block' : 'none' }}>
           <CodexPanel
             onConnectionChange={setCodexConnected}
             onUsageChange={handleCodexUsageChange}
+            onLoadingChange={setCodexLoading}
+            manualRefreshNonce={codexManualRefreshNonce}
+            autoRefreshIntervalMs={AUTO_REFRESH_INTERVAL_MS}
           />
-        )}
+        </div>
 
         <ActionButtons
           onRefresh={handleRefresh}
           onDashboard={handleOpenDashboard}
           onQuit={handleQuit}
-          loading={claudeLoading}
+          loading={activeTab === 'claude' ? claudeLoading : codexLoading}
         />
       </div>
     </div>
