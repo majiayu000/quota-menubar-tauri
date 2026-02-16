@@ -39,12 +39,33 @@ fn position_window_near_tray(app: &AppHandle, tray: &tauri::tray::TrayIcon) {
     };
 
     let tray_size = match rect.size {
-        tauri::Size::Physical(s) => s.height,
-        tauri::Size::Logical(l) => l.height as u32,
+        tauri::Size::Physical(s) => (s.width, s.height),
+        tauri::Size::Logical(l) => (l.width as u32, l.height as u32),
     };
 
-    let x = pos.0 - (window_size.width as i32 / 2);
-    let y = pos.1 + tray_size as i32 + 4;
+    let window_width = window_size.width as i32;
+    let window_height = window_size.height as i32;
+    let tray_center_x = pos.0 + (tray_size.0 as i32 / 2);
+
+    let mut x = tray_center_x - (window_width / 2);
+    let mut y = pos.1 + tray_size.1 as i32 + 8;
+
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        let monitor_size = monitor.size();
+        let screen_width = monitor_size.width as i32;
+        let screen_height = monitor_size.height as i32;
+
+        if pos.1 > screen_height / 2 {
+            // Taskbars at the bottom (common on Windows) should open upward.
+            y = pos.1 - window_height - 8;
+        }
+
+        let max_x = (screen_width - window_width).max(0);
+        let max_y = (screen_height - window_height).max(0);
+        x = x.clamp(0, max_x);
+        y = y.clamp(0, max_y);
+    }
+
     let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
 }
 

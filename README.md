@@ -1,6 +1,6 @@
 # Quota Menubar Tauri
 
-Tauri v2 menubar app for monitoring Claude and Codex quota usage on macOS.
+Tauri v2 menubar/tray app for monitoring Claude and Codex quota usage on macOS and Windows.
 
 ## Core Behavior
 
@@ -39,7 +39,7 @@ Tauri v2 menubar app for monitoring Claude and Codex quota usage on macOS.
 
 ## Requirements
 
-- macOS (menubar target)
+- macOS or Windows
 - Bun (recommended package manager/runtime)
 - Rust toolchain
 - Tauri prerequisites installed
@@ -57,11 +57,18 @@ bun run tauri dev
 bun run tauri build --bundles app
 ```
 
-App bundle output:
+macOS app bundle output:
 
 `src-tauri/target/release/bundle/macos/Quota Menubar Tauri.app`
 
+Windows installer output:
+
+`src-tauri/target/release/bundle/msi/`
+`src-tauri/target/release/bundle/nsis/`
+
 ## Install / Run
+
+macOS:
 
 ```bash
 ./scripts/stop_app.sh
@@ -74,6 +81,11 @@ Or one-shot restart after rebuild:
 ```bash
 ./scripts/reinstall_and_run.sh
 ```
+
+Windows:
+
+- Build installer: `bun run tauri build --bundles msi,nsis`
+- Install from generated `.msi` or `.exe`
 
 ## Verification Commands
 
@@ -89,7 +101,8 @@ cd src-tauri && cargo test
   - check menu bar manager hidden area (Ice/Bartender)
   - ensure app is not auto-grouped into hidden extras
 - No quota data:
-  - Claude: ensure Claude Code login exists in macOS Keychain
+  - Claude on macOS: ensure Claude Code login exists in macOS Keychain
+  - Claude on Windows/Linux: set `CLAUDE_CODE_OAUTH_TOKEN` environment variable
   - Codex: ensure `~/.codex/auth.json` is valid and not expired
 - Codex token expired:
   - run `codex` login flow again

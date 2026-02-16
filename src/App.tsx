@@ -13,6 +13,13 @@ const DOCK_HIDDEN_KEY = 'claude-quota-dock-hidden';
 const TAB_STORAGE_KEY = 'claude-quota-tab';
 const AUTO_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 
+function isMacOSPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  const platform = nav.userAgentData?.platform ?? navigator.platform ?? '';
+  return /mac/i.test(platform);
+}
+
 function getSavedTab(): TabName {
   try {
     const saved = localStorage.getItem(TAB_STORAGE_KEY);
@@ -82,6 +89,8 @@ function getClaudeTrayUsedPercent(quota: QuotaData | null): number | null {
 }
 
 export default function App() {
+  const isMacOS = isMacOSPlatform();
+
   // Claude state
   const [quota, setQuota] = useState<QuotaData | null>(null);
   const [claudeLoading, setClaudeLoading] = useState(false);
@@ -271,14 +280,16 @@ export default function App() {
         <div className="settings-row">
           <div className="settings-meta">
             <span className="settings-title">Appearance</span>
-            <label className="dock-toggle">
-              <span className="toggle-label">Hide Dock</span>
-              <input
-                type="checkbox"
-                checked={dockHidden}
-                onChange={handleDockToggle}
-              />
-            </label>
+            {isMacOS && (
+              <label className="dock-toggle">
+                <span className="toggle-label">Hide Dock</span>
+                <input
+                  type="checkbox"
+                  checked={dockHidden}
+                  onChange={handleDockToggle}
+                />
+              </label>
+            )}
           </div>
           <ThemeSelector currentTheme={theme} onThemeChange={handleThemeChange} />
         </div>

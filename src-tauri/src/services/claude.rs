@@ -1,9 +1,11 @@
 use crate::domain::models::{QuotaData, UsageInfo};
-use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+#[cfg(target_os = "macos")]
+use std::process::Command;
 
 const TOKEN_CACHE_TTL: Duration = Duration::from_secs(300);
+const CLAUDE_TOKEN_ENV_KEY: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 
 #[derive(Clone)]
 struct CachedToken {
@@ -22,7 +24,15 @@ fn claude_http_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(reqwest::Client::new)
 }
 
-fn read_oauth_token_from_keychain() -> Result<String, String> {
+fn read_oauth_token_from_env() -> Option<String> {
+    std::env::var(CLAUDE_TOKEN_ENV_KEY)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn read_oauth_token_from_system() -> Result<String, String> {
     let credential_names = [
         "Claude Code-credentials",
         "claude-credentials",
@@ -51,7 +61,23 @@ fn read_oauth_token_from_keychain() -> Result<String, String> {
         }
     }
 
-    Err("OAuth token not found. Please ensure you are logged into Claude Code.".to_string())
+    Err(format!(
+        "OAuth token not found. Please login to Claude Code or set {CLAUDE_TOKEN_ENV_KEY}."
+    ))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_oauth_token_from_system() -> Result<String, String> {
+    Err(format!(
+        "OAuth token not configured for this OS. Set {CLAUDE_TOKEN_ENV_KEY}."
+    ))
+}
+
+fn read_oauth_token() -> Result<String, String> {
+    if let Some(token) = read_oauth_token_from_env() {
+        return Ok(token);
+    }
+    read_oauth_token_from_system()
 }
 
 fn get_oauth_token(force_refresh: bool) -> Result<String, String> {
@@ -65,7 +91,7 @@ fn get_oauth_token(force_refresh: bool) -> Result<String, String> {
         }
     }
 
-    let fresh_token = read_oauth_token_from_keychain()?;
+    let fresh_token = read_oauth_token()?;
     if let Ok(mut guard) = token_cache().lock() {
         *guard = Some(CachedToken {
             value: fresh_token.clone(),
