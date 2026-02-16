@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 
 use super::tray_icon;
+use chrono::Local;
 use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
@@ -160,8 +161,11 @@ pub async fn update_tray_tooltip(
 
             tray.set_icon(Some(icon)).map_err(|e| e.to_string())?;
             tray.set_icon_as_template(false).map_err(|e| e.to_string())?;
+            let updated_at = Local::now().format("%H:%M:%S").to_string();
             tray
-                .set_tooltip(Some(format!("Quota Menubar ({pct}% used)")))
+                .set_tooltip(Some(format!(
+                    "Quota Menubar ({pct}% used, updated {updated_at})"
+                )))
                 .map_err(|e| e.to_string())?;
             tray.set_visible(true).map_err(|e| e.to_string())?;
         }

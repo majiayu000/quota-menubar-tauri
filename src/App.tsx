@@ -11,7 +11,7 @@ import './styles.css';
 const THEME_STORAGE_KEY = 'claude-quota-theme';
 const DOCK_HIDDEN_KEY = 'claude-quota-dock-hidden';
 const TAB_STORAGE_KEY = 'claude-quota-tab';
-const AUTO_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
 
 function isMacOSPlatform(): boolean {
   if (typeof navigator === 'undefined') return false;
@@ -198,7 +198,7 @@ export default function App() {
 
     // Keep a visible numeric tray title even before data is ready.
     updateTrayIcon(0);
-  }, [activeTab, quota, codexUsedPercent, updateTrayIcon]);
+  }, [activeTab, quota, codexUsedPercent, codexLoading, updateTrayIcon]);
 
   const handleThemeChange = useCallback((newTheme: ThemeName) => {
     setTheme(newTheme);

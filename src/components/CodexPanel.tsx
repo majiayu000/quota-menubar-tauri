@@ -79,7 +79,7 @@ function getTrayUsedPercent(limits: CodexRateLimits): number | null {
 export default function CodexPanel({
   onConnectionChange,
   onUsageChange,
-  autoRefreshIntervalMs = 15 * 60 * 1000,
+  autoRefreshIntervalMs = 60 * 1000,
   manualRefreshNonce = 0,
   onLoadingChange,
 }: CodexPanelProps) {

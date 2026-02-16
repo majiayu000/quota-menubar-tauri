@@ -8,6 +8,8 @@ Tauri v2 menubar/tray app for monitoring Claude and Codex quota usage on macOS a
 - Left click tray icon toggles the quota panel.
 - Right click menu provides `Show / Hide Window` and `Quit`.
 - Claude and Codex are separated into independent tabs and polling flows.
+- Quota polling runs every 60 seconds in the background.
+- macOS tray mode disables webview background throttling so hidden windows keep polling.
 - Tray percentage now represents **used quota** (not remaining quota).
 
 ## Quota Semantics
