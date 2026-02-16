@@ -1,5 +1,9 @@
 # Quota Menubar Tauri
 
+<p align="center">
+  <img src="src-tauri/icons/app-icon.svg" alt="Quota Menubar Tauri logo" width="128" />
+</p>
+
 Tauri v2 menubar/tray app for monitoring Claude and Codex quota usage on macOS and Windows.
 
 ## Core Behavior
