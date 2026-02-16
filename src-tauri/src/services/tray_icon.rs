@@ -49,9 +49,10 @@ fn smooth_step(edge0: f32, edge1: f32, x: f32) -> f32 {
 }
 
 fn usage_color(used_percent: u8) -> (u8, u8, u8) {
-    if used_percent >= 90 {
+    // Keep tray color thresholds aligned with frontend quota cards.
+    if used_percent >= 80 {
         (239, 68, 68)
-    } else if used_percent >= 75 {
+    } else if used_percent >= 50 {
         (245, 158, 11)
     } else {
         (34, 197, 94)
@@ -130,11 +131,19 @@ pub fn generate_tray_icon(used_percent: u8, size: u32) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::generate_tray_icon;
+    use super::{generate_tray_icon, usage_color};
 
     #[test]
     fn generate_icon_returns_png_bytes() {
         let bytes = generate_tray_icon(73, 44);
         assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn usage_color_matches_ui_thresholds() {
+        assert_eq!(usage_color(49), (34, 197, 94));
+        assert_eq!(usage_color(50), (245, 158, 11));
+        assert_eq!(usage_color(79), (245, 158, 11));
+        assert_eq!(usage_color(80), (239, 68, 68));
     }
 }
