@@ -21,6 +21,22 @@ impl Default for TrayState {
     }
 }
 
+fn find_monitor_at_point(app: &AppHandle, x: i32, y: i32) -> Option<tauri::Monitor> {
+    let monitors = app.available_monitors().ok()?;
+    for monitor in monitors {
+        let pos = monitor.position();
+        let size = monitor.size();
+        let mx = pos.x;
+        let my = pos.y;
+        let mw = size.width as i32;
+        let mh = size.height as i32;
+        if x >= mx && x < mx + mw && y >= my && y < my + mh {
+            return Some(monitor);
+        }
+    }
+    None
+}
+
 fn position_window_near_tray(app: &AppHandle, tray: &tauri::tray::TrayIcon) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -51,20 +67,24 @@ fn position_window_near_tray(app: &AppHandle, tray: &tauri::tray::TrayIcon) {
     let mut x = tray_center_x - (window_width / 2);
     let mut y = pos.1 + tray_size.1 as i32 + 8;
 
-    if let Ok(Some(monitor)) = window.current_monitor() {
+    if let Some(monitor) = find_monitor_at_point(app, pos.0, pos.1) {
+        let monitor_pos = monitor.position();
         let monitor_size = monitor.size();
+        let screen_x = monitor_pos.x;
+        let screen_y = monitor_pos.y;
         let screen_width = monitor_size.width as i32;
         let screen_height = monitor_size.height as i32;
 
-        if pos.1 > screen_height / 2 {
-            // Taskbars at the bottom (common on Windows) should open upward.
+        if pos.1 - screen_y > screen_height / 2 {
             y = pos.1 - window_height - 8;
         }
 
-        let max_x = (screen_width - window_width).max(0);
-        let max_y = (screen_height - window_height).max(0);
-        x = x.clamp(0, max_x);
-        y = y.clamp(0, max_y);
+        let min_x = screen_x;
+        let max_x = (screen_x + screen_width - window_width).max(screen_x);
+        let min_y = screen_y;
+        let max_y = (screen_y + screen_height - window_height).max(screen_y);
+        x = x.clamp(min_x, max_x);
+        y = y.clamp(min_y, max_y);
     }
 
     let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
