@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex};
 
 use super::tray_icon;
 use chrono::Local;
@@ -173,14 +173,26 @@ pub async fn update_tray_tooltip(
         guard.clone()
     };
 
-    if let Some(id) = tray_id {
-        if let Some(tray) = app.tray_by_id(&id) {
-            let pct = percentage.min(100);
+    let Some(id) = tray_id else {
+        return Ok(());
+    };
+
+    let pct = percentage.min(100);
+    let (tx, rx) = mpsc::channel();
+    let app_handle = app.clone();
+
+    app.run_on_main_thread(move || {
+        let result = (|| -> Result<(), String> {
+            let Some(tray) = app_handle.tray_by_id(&id) else {
+                return Ok(());
+            };
+
             let icon_bytes = tray_icon::generate_tray_icon(pct, 44);
             let icon = Image::from_bytes(&icon_bytes).map_err(|e| e.to_string())?;
 
             tray.set_icon(Some(icon)).map_err(|e| e.to_string())?;
             tray.set_icon_as_template(false).map_err(|e| e.to_string())?;
+
             let updated_at = Local::now().format("%H:%M:%S").to_string();
             tray
                 .set_tooltip(Some(format!(
@@ -188,8 +200,13 @@ pub async fn update_tray_tooltip(
                 )))
                 .map_err(|e| e.to_string())?;
             tray.set_visible(true).map_err(|e| e.to_string())?;
-        }
-    }
+            Ok(())
+        })();
 
-    Ok(())
+        let _ = tx.send(result);
+    })
+    .map_err(|e| e.to_string())?;
+
+    rx.recv()
+        .map_err(|_| "failed to receive tray update result".to_string())?
 }
