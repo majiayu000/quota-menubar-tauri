@@ -102,15 +102,30 @@ fn get_oauth_token(force_refresh: bool) -> Result<String, String> {
 }
 
 async fn request_quota(access_token: &str) -> Result<reqwest::Response, String> {
-    claude_http_client()
-        .get("https://api.anthropic.com/api/oauth/usage")
-        .header("Accept", "application/json")
-        .header("Authorization", format!("Bearer {access_token}"))
-        .header("anthropic-beta", "oauth-2025-04-20")
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|err| format!("Network error: {err}"))
+    const MAX_RETRIES: u32 = 3;
+    const BASE_DELAY_MS: u64 = 1000;
+
+    for attempt in 0..=MAX_RETRIES {
+        let response = claude_http_client()
+            .get("https://api.anthropic.com/api/oauth/usage")
+            .header("Accept", "application/json")
+            .header("Authorization", format!("Bearer {access_token}"))
+            .header("anthropic-beta", "oauth-2025-04-20")
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|err| format!("Network error: {err}"))?;
+
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_RETRIES {
+            let delay = Duration::from_millis(BASE_DELAY_MS * 2u64.pow(attempt));
+            std::thread::sleep(delay);
+            continue;
+        }
+
+        return Ok(response);
+    }
+
+    unreachable!()
 }
 
 fn is_auth_error(status: reqwest::StatusCode) -> bool {
