@@ -12,6 +12,7 @@ const THEME_STORAGE_KEY = 'claude-quota-theme';
 const DOCK_HIDDEN_KEY = 'claude-quota-dock-hidden';
 const TAB_STORAGE_KEY = 'claude-quota-tab';
 const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
+const BACKOFF_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 function isMacOSPlatform(): boolean {
   if (typeof navigator === 'undefined') return false;
@@ -95,6 +96,7 @@ export default function App() {
   const [quota, setQuota] = useState<QuotaData | null>(null);
   const [claudeLoading, setClaudeLoading] = useState(false);
   const [claudeError, setClaudeError] = useState<string | null>(null);
+  const claudeIntervalRef = useRef(AUTO_REFRESH_INTERVAL_MS);
 
   // Codex state
   const [codexConnected, setCodexConnected] = useState(false);
@@ -158,9 +160,19 @@ export default function App() {
 
       if (data.error) {
         setClaudeError(data.error);
-        setQuota(null);
+        // On 429, keep showing stale quota data if we have it
+        if (!data.error.includes('429')) {
+          setQuota(null);
+        }
+        // Back off polling on 429
+        if (data.error.includes('429')) {
+          claudeIntervalRef.current = BACKOFF_REFRESH_INTERVAL_MS;
+        }
       } else {
         setQuota(data);
+        setClaudeError(null);
+        // Reset to normal interval on success
+        claudeIntervalRef.current = AUTO_REFRESH_INTERVAL_MS;
       }
     } catch (err) {
       setClaudeError(err instanceof Error ? err.message : 'Unknown error');
@@ -174,10 +186,16 @@ export default function App() {
     fetchClaudeQuota();
   }, [fetchClaudeQuota]);
 
-  // Auto-refresh Claude data in background.
+  // Auto-refresh Claude data in background with adaptive interval.
   useEffect(() => {
-    const interval = setInterval(fetchClaudeQuota, AUTO_REFRESH_INTERVAL_MS);
-    return () => clearInterval(interval);
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      timer = setTimeout(() => {
+        fetchClaudeQuota().then(schedule);
+      }, claudeIntervalRef.current);
+    };
+    schedule();
+    return () => clearTimeout(timer);
   }, [fetchClaudeQuota]);
 
   // Update tray icon when active tab or data changes
