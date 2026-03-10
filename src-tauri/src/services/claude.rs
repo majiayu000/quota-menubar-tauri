@@ -1,4 +1,7 @@
 use crate::domain::models::{QuotaData, UsageInfo};
+use std::fs::OpenOptions;
+use std::io::Write as IoWrite;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 #[cfg(target_os = "macos")]
@@ -16,6 +19,80 @@ const CREDENTIAL_NAMES: [&str; 4] = [
     "Claude-credentials",
     "claudecode-credentials",
 ];
+
+static REQUEST_COUNT: AtomicU64 = AtomicU64::new(0);
+static LAST_REQUEST_TIME: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+
+fn last_request_time() -> &'static Mutex<Option<Instant>> {
+    LAST_REQUEST_TIME.get_or_init(|| Mutex::new(None))
+}
+
+fn log_msg(msg: &str) {
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    let line = format!("[{timestamp}] {msg}\n");
+
+    print!("{line}");
+
+    let log_dir = dirs::home_dir()
+        .unwrap_or_default()
+        .join("Library/Logs/quota-menubar-tauri");
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        eprintln!("[log] failed to create log dir: {e}");
+        return;
+    }
+
+    match OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_dir.join("claude.log"))
+    {
+        Ok(mut file) => {
+            if let Err(e) = file.write_all(line.as_bytes()) {
+                eprintln!("[log] failed to write log: {e}");
+            }
+        }
+        Err(e) => eprintln!("[log] failed to open log file: {e}"),
+    }
+}
+
+fn log_response_headers(response: &reqwest::Response) {
+    let headers = response.headers();
+    let interesting = [
+        "retry-after",
+        "x-ratelimit-limit-requests",
+        "x-ratelimit-limit-tokens",
+        "x-ratelimit-remaining-requests",
+        "x-ratelimit-remaining-tokens",
+        "x-ratelimit-reset-requests",
+        "x-ratelimit-reset-tokens",
+        "cf-ray",
+        "x-should-retry",
+        "request-id",
+    ];
+
+    let mut parts = Vec::new();
+    for name in interesting {
+        if let Some(val) = headers.get(name) {
+            let val_str = val.to_str().unwrap_or("?");
+            parts.push(format!("{name}={val_str}"));
+        }
+    }
+    if !parts.is_empty() {
+        log_msg(&format!("[API] response headers: {}", parts.join(", ")));
+    }
+}
+
+fn track_request() -> (u64, Option<f64>) {
+    let count = REQUEST_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    let gap = if let Ok(mut guard) = last_request_time().lock() {
+        let gap = guard.map(|t| t.elapsed().as_secs_f64());
+        *guard = Some(Instant::now());
+        gap
+    } else {
+        None
+    };
+    (count, gap)
+}
 
 #[derive(Clone)]
 struct CachedCredentials {
@@ -79,7 +156,9 @@ fn read_credentials_from_system() -> Result<KeychainCredentials, String> {
                     if let Some(access_token) = oauth["accessToken"].as_str() {
                         return Ok(KeychainCredentials {
                             access_token: access_token.to_string(),
-                            refresh_token: oauth["refreshToken"].as_str().map(ToString::to_string),
+                            refresh_token: oauth["refreshToken"]
+                                .as_str()
+                                .map(ToString::to_string),
                             cred_name: cred_name.to_string(),
                         });
                     }
@@ -109,34 +188,39 @@ fn token_preview(token: &str) -> String {
 }
 
 fn get_oauth_token(force_refresh: bool) -> Result<String, String> {
-    println!("[OAuth] get_oauth_token called, force_refresh={force_refresh}");
+    log_msg(&format!(
+        "[OAuth] get_oauth_token called, force_refresh={force_refresh}"
+    ));
 
     if !force_refresh {
         if let Ok(guard) = credentials_cache().lock() {
             if let Some(creds) = guard.as_ref() {
                 let elapsed = creds.cached_at.elapsed();
                 if elapsed < TOKEN_CACHE_TTL {
-                    println!(
+                    log_msg(&format!(
                         "[OAuth] cache hit, token={}, age={:.0}s, ttl={:.0}s remaining",
                         token_preview(&creds.access_token),
                         elapsed.as_secs_f64(),
                         (TOKEN_CACHE_TTL - elapsed).as_secs_f64()
-                    );
+                    ));
                     return Ok(creds.access_token.clone());
                 }
-                println!(
+                log_msg(&format!(
                     "[OAuth] cache expired, age={:.0}s > ttl={:.0}s, re-reading credentials",
                     elapsed.as_secs_f64(),
                     TOKEN_CACHE_TTL.as_secs_f64()
-                );
+                ));
             } else {
-                println!("[OAuth] cache empty, first-time read");
+                log_msg("[OAuth] cache empty, first-time read");
             }
         }
     }
 
     if let Some(token) = read_oauth_token_from_env() {
-        println!("[OAuth] using env var token={}", token_preview(&token));
+        log_msg(&format!(
+            "[OAuth] using env var token={}",
+            token_preview(&token)
+        ));
         if let Ok(mut guard) = credentials_cache().lock() {
             *guard = Some(CachedCredentials {
                 access_token: token.clone(),
@@ -148,14 +232,14 @@ fn get_oauth_token(force_refresh: bool) -> Result<String, String> {
         return Ok(token);
     }
 
-    println!("[OAuth] reading from keychain...");
+    log_msg("[OAuth] reading from keychain...");
     let keychain = read_credentials_from_system()?;
-    println!(
+    log_msg(&format!(
         "[OAuth] keychain read ok: cred_name={}, token={}, has_refresh={}",
         keychain.cred_name,
         token_preview(&keychain.access_token),
         keychain.refresh_token.is_some()
-    );
+    ));
     if let Ok(mut guard) = credentials_cache().lock() {
         *guard = Some(CachedCredentials {
             access_token: keychain.access_token.clone(),
@@ -168,7 +252,7 @@ fn get_oauth_token(force_refresh: bool) -> Result<String, String> {
 }
 
 async fn refresh_access_token() -> Result<String, String> {
-    println!("[OAuth] refresh_access_token: starting token refresh...");
+    log_msg("[OAuth] refresh_access_token: starting token refresh...");
     let (refresh_token, cred_name) = {
         let guard = credentials_cache()
             .lock()
@@ -178,11 +262,11 @@ async fn refresh_access_token() -> Result<String, String> {
             .refresh_token
             .clone()
             .ok_or("No refresh token available")?;
-        println!(
+        log_msg(&format!(
             "[OAuth] refresh_access_token: refresh_token={}, cred_name={:?}",
             token_preview(&rt),
             creds.cred_name
-        );
+        ));
         (rt, creds.cred_name.clone())
     };
 
@@ -197,16 +281,22 @@ async fn refresh_access_token() -> Result<String, String> {
         .send()
         .await
         .map_err(|e| {
-            println!("[OAuth] refresh_access_token: network error: {e}");
+            log_msg(&format!(
+                "[OAuth] refresh_access_token: network error: {e}"
+            ));
             format!("Refresh network error: {e}")
         })?;
 
     let status = response.status();
-    println!("[OAuth] refresh_access_token: response status={status}");
+    log_msg(&format!(
+        "[OAuth] refresh_access_token: response status={status}"
+    ));
 
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        println!("[OAuth] refresh_access_token: failed body={body}");
+        log_msg(&format!(
+            "[OAuth] refresh_access_token: failed body={body}"
+        ));
         return Err(format!("Refresh failed: HTTP {status}, body={body}"));
     }
 
@@ -222,16 +312,18 @@ async fn refresh_access_token() -> Result<String, String> {
 
     let new_refresh = data["refresh_token"].as_str().map(ToString::to_string);
 
-    println!(
+    log_msg(&format!(
         "[OAuth] refresh_access_token: new token={}, has_new_refresh={}",
         token_preview(&new_access),
         new_refresh.is_some()
-    );
+    ));
 
     // Update keychain so the fresh token persists across restarts
     #[cfg(target_os = "macos")]
     if let Some(name) = &cred_name {
-        println!("[OAuth] refresh_access_token: updating keychain entry '{name}'");
+        log_msg(&format!(
+            "[OAuth] refresh_access_token: updating keychain entry '{name}'"
+        ));
         update_keychain(name, &new_access, new_refresh.as_deref());
     }
 
@@ -244,7 +336,7 @@ async fn refresh_access_token() -> Result<String, String> {
         });
     }
 
-    println!("[OAuth] refresh_access_token: cache updated successfully");
+    log_msg("[OAuth] refresh_access_token: cache updated successfully");
     Ok(new_access)
 }
 
@@ -290,7 +382,7 @@ fn update_keychain(cred_name: &str, access_token: &str, refresh_token: Option<&s
         })
         .unwrap_or_default();
 
-    let _ = Command::new("security")
+    if let Err(e) = Command::new("security")
         .args([
             "add-generic-password",
             "-U",
@@ -301,15 +393,23 @@ fn update_keychain(cred_name: &str, access_token: &str, refresh_token: Option<&s
             "-w",
             &new_json,
         ])
-        .output();
+        .output()
+    {
+        log_msg(&format!(
+            "[OAuth] update_keychain: failed to write keychain: {e}"
+        ));
+    }
 }
 
 async fn request_quota(access_token: &str) -> Result<reqwest::Response, String> {
-    println!(
-        "[API] request_quota: token={}, sending single request",
-        token_preview(access_token)
-    );
+    let (count, gap) = track_request();
+    log_msg(&format!(
+        "[API] request_quota: token={}, req_count={count}, gap={:.1}s",
+        token_preview(access_token),
+        gap.unwrap_or(0.0)
+    ));
 
+    let start = Instant::now();
     let response = claude_http_client()
         .get("https://api.anthropic.com/api/oauth/usage")
         .header("Accept", "application/json")
@@ -319,12 +419,17 @@ async fn request_quota(access_token: &str) -> Result<reqwest::Response, String> 
         .send()
         .await
         .map_err(|err| {
-            println!("[API] request_quota: network error: {err}");
+            log_msg(&format!("[API] request_quota: network error: {err}"));
             format!("Network error: {err}")
         })?;
 
+    let elapsed = start.elapsed();
     let status = response.status();
-    println!("[API] request_quota: status={status}");
+    log_msg(&format!(
+        "[API] request_quota: status={status}, latency={:.1}s",
+        elapsed.as_secs_f64()
+    ));
+    log_response_headers(&response);
 
     Ok(response)
 }
@@ -354,17 +459,17 @@ fn get_cached_quota() -> Option<QuotaData> {
     let cached = guard.as_ref()?;
     let age = cached.cached_at.elapsed();
     if age < QUOTA_CACHE_TTL {
-        println!(
+        log_msg(&format!(
             "[Quota] response cache hit, age={:.0}s, ttl={:.0}s remaining",
             age.as_secs_f64(),
             (QUOTA_CACHE_TTL - age).as_secs_f64()
-        );
+        ));
         Some(cached.data.clone())
     } else {
-        println!(
+        log_msg(&format!(
             "[Quota] response cache expired, age={:.0}s",
             age.as_secs_f64()
-        );
+        ));
         None
     }
 }
@@ -374,10 +479,10 @@ fn get_stale_cached_quota() -> Option<QuotaData> {
     let cached = guard.as_ref()?;
     if cached.data.connected {
         let age = cached.cached_at.elapsed();
-        println!(
+        log_msg(&format!(
             "[Quota] returning stale cache as fallback, age={:.0}s",
             age.as_secs_f64()
-        );
+        ));
         Some(cached.data.clone())
     } else {
         None
@@ -398,7 +503,7 @@ fn is_rate_limited(status: reqwest::StatusCode) -> bool {
 }
 
 pub async fn fetch_quota() -> QuotaData {
-    println!("[Quota] ---- fetch_quota start ----");
+    log_msg("[Quota] ---- fetch_quota start ----");
 
     // Return cached response if still fresh
     if let Some(cached) = get_cached_quota() {
@@ -408,7 +513,7 @@ pub async fn fetch_quota() -> QuotaData {
     let mut access_token = match get_oauth_token(false) {
         Ok(token) => token,
         Err(error) => {
-            println!("[Quota] get_oauth_token failed: {error}");
+            log_msg(&format!("[Quota] get_oauth_token failed: {error}"));
             return QuotaData::disconnected(error);
         }
     };
@@ -416,28 +521,31 @@ pub async fn fetch_quota() -> QuotaData {
     let mut response = match request_quota(&access_token).await {
         Ok(resp) => resp,
         Err(error) => {
-            println!("[Quota] initial request failed: {error}");
+            log_msg(&format!("[Quota] initial request failed: {error}"));
             return get_stale_cached_quota()
                 .unwrap_or_else(|| QuotaData::disconnected(error));
         }
     };
 
     let status = response.status();
-    println!("[Quota] initial response: status={status}");
+    log_msg(&format!("[Quota] initial response: status={status}"));
 
     // 429: return stale cache if available, don't retry
     if is_rate_limited(status) {
-        println!("[Quota] 429 rate limited, returning stale cache if available");
-        return get_stale_cached_quota()
-            .unwrap_or_else(|| QuotaData::disconnected("API error: 429 Too Many Requests"));
+        log_msg("[Quota] 429 rate limited, returning stale cache if available");
+        return get_stale_cached_quota().unwrap_or_else(|| {
+            QuotaData::disconnected("API error: 429 Too Many Requests")
+        });
     }
 
     if is_auth_error(status) {
-        println!("[Quota] auth error ({status}), step 1: force re-read from keychain");
+        log_msg(&format!(
+            "[Quota] auth error ({status}), step 1: force re-read from keychain"
+        ));
         access_token = match get_oauth_token(true) {
             Ok(token) => token,
             Err(error) => {
-                println!("[Quota] keychain re-read failed: {error}");
+                log_msg(&format!("[Quota] keychain re-read failed: {error}"));
                 return QuotaData::disconnected(error);
             }
         };
@@ -445,27 +553,34 @@ pub async fn fetch_quota() -> QuotaData {
         response = match request_quota(&access_token).await {
             Ok(resp) => resp,
             Err(error) => {
-                println!("[Quota] retry with keychain token failed: {error}");
+                log_msg(&format!(
+                    "[Quota] retry with keychain token failed: {error}"
+                ));
                 return QuotaData::disconnected(error);
             }
         };
 
         let status2 = response.status();
-        println!("[Quota] keychain retry response: status={status2}");
+        log_msg(&format!(
+            "[Quota] keychain retry response: status={status2}"
+        ));
 
         if is_rate_limited(status2) {
-            println!("[Quota] 429 after keychain retry, returning stale cache");
-            return get_stale_cached_quota()
-                .unwrap_or_else(|| QuotaData::disconnected("API error: 429 Too Many Requests"));
+            log_msg("[Quota] 429 after keychain retry, returning stale cache");
+            return get_stale_cached_quota().unwrap_or_else(|| {
+                QuotaData::disconnected("API error: 429 Too Many Requests")
+            });
         }
 
         // Keychain token also expired — try OAuth refresh
         if is_auth_error(status2) {
-            println!("[Quota] auth error ({status2}), step 2: attempting OAuth refresh");
+            log_msg(&format!(
+                "[Quota] auth error ({status2}), step 2: attempting OAuth refresh"
+            ));
             access_token = match refresh_access_token().await {
                 Ok(token) => token,
                 Err(err) => {
-                    println!("[Quota] OAuth refresh failed: {err}");
+                    log_msg(&format!("[Quota] OAuth refresh failed: {err}"));
                     return QuotaData::disconnected(
                         "Token expired. Please re-login to Claude Code.",
                     );
@@ -475,16 +590,22 @@ pub async fn fetch_quota() -> QuotaData {
             response = match request_quota(&access_token).await {
                 Ok(resp) => resp,
                 Err(error) => {
-                    println!("[Quota] retry with refreshed token failed: {error}");
+                    log_msg(&format!(
+                        "[Quota] retry with refreshed token failed: {error}"
+                    ));
                     return QuotaData::disconnected(error);
                 }
             };
 
             let status3 = response.status();
-            println!("[Quota] refreshed token response: status={status3}");
+            log_msg(&format!(
+                "[Quota] refreshed token response: status={status3}"
+            ));
 
             if !status3.is_success() {
-                println!("[Quota] FAILED after all recovery attempts: {status3}");
+                log_msg(&format!(
+                    "[Quota] FAILED after all recovery attempts: {status3}"
+                ));
                 return QuotaData::disconnected(format!("API error: {status3}"));
             }
         }
@@ -492,29 +613,29 @@ pub async fn fetch_quota() -> QuotaData {
 
     if !response.status().is_success() {
         let final_status = response.status();
-        println!("[Quota] non-success response: {final_status}");
+        log_msg(&format!("[Quota] non-success response: {final_status}"));
         return QuotaData::disconnected(format!("API error: {final_status}"));
     }
 
     let data = match response.json::<serde_json::Value>().await {
         Ok(data) => data,
         Err(err) => {
-            println!("[Quota] parse error: {err}");
+            log_msg(&format!("[Quota] parse error: {err}"));
             return QuotaData::disconnected(format!("Failed to parse response: {err}"));
         }
     };
 
     if data["error"].is_object() {
         let error_msg = data["error"]["message"].as_str().unwrap_or("API error");
-        println!("[Quota] API returned error: {error_msg}");
+        log_msg(&format!("[Quota] API returned error: {error_msg}"));
         return QuotaData::disconnected(format!("{error_msg} (Token may be expired)"));
     }
 
     let five_hour = data["five_hour"]["utilization"].as_f64();
     let seven_day = data["seven_day"]["utilization"].as_f64();
-    println!(
+    log_msg(&format!(
         "[Quota] SUCCESS: five_hour={five_hour:?}%, seven_day={seven_day:?}%"
-    );
+    ));
 
     let result = QuotaData::connected(
         parse_quota_window(&data["five_hour"]),
