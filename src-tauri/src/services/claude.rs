@@ -12,6 +12,8 @@ const QUOTA_CACHE_TTL: Duration = Duration::from_secs(120);
 const CLAUDE_TOKEN_ENV_KEY: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 const OAUTH_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+/// Token expiry buffer: refresh 30 minutes before actual expiry
+const TOKEN_EXPIRY_BUFFER_MS: u64 = 30 * 60 * 1000;
 
 const CREDENTIAL_NAMES: [&str; 4] = [
     "Claude Code-credentials",
@@ -100,6 +102,23 @@ struct CachedCredentials {
     refresh_token: Option<String>,
     cred_name: Option<String>,
     cached_at: Instant,
+    expires_at_ms: Option<u64>,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Check if a token is expired based on its expiresAt field.
+/// Returns true if expired or will expire within the buffer window.
+fn is_token_expired(expires_at_ms: Option<u64>) -> bool {
+    let Some(expires_at) = expires_at_ms else {
+        return false;
+    };
+    now_ms() + TOKEN_EXPIRY_BUFFER_MS > expires_at
 }
 
 static CREDENTIALS_CACHE: OnceLock<Mutex<Option<CachedCredentials>>> = OnceLock::new();
@@ -134,6 +153,7 @@ fn read_oauth_token_from_env() -> Option<String> {
 struct KeychainCredentials {
     access_token: String,
     refresh_token: Option<String>,
+    expires_at_ms: Option<u64>,
     cred_name: String,
 }
 
@@ -154,11 +174,13 @@ fn read_credentials_from_system() -> Result<KeychainCredentials, String> {
                 if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&creds_json) {
                     let oauth = &creds["claudeAiOauth"];
                     if let Some(access_token) = oauth["accessToken"].as_str() {
+                        let expires_at_ms = oauth["expiresAt"].as_u64();
                         return Ok(KeychainCredentials {
                             access_token: access_token.to_string(),
                             refresh_token: oauth["refreshToken"]
                                 .as_str()
                                 .map(ToString::to_string),
+                            expires_at_ms,
                             cred_name: cred_name.to_string(),
                         });
                     }
@@ -197,19 +219,29 @@ fn get_oauth_token(force_refresh: bool) -> Result<String, String> {
             if let Some(creds) = guard.as_ref() {
                 let elapsed = creds.cached_at.elapsed();
                 if elapsed < TOKEN_CACHE_TTL {
+                    // Check if token is expired based on expiresAt
+                    if is_token_expired(creds.expires_at_ms) {
+                        log_msg(&format!(
+                            "[OAuth] cache hit but token expired (expiresAt={}), needs refresh",
+                            creds.expires_at_ms.unwrap_or(0)
+                        ));
+                        // Fall through to re-read from keychain
+                    } else {
+                        log_msg(&format!(
+                            "[OAuth] cache hit, token={}, age={:.0}s, ttl={:.0}s remaining",
+                            token_preview(&creds.access_token),
+                            elapsed.as_secs_f64(),
+                            (TOKEN_CACHE_TTL - elapsed).as_secs_f64()
+                        ));
+                        return Ok(creds.access_token.clone());
+                    }
+                } else {
                     log_msg(&format!(
-                        "[OAuth] cache hit, token={}, age={:.0}s, ttl={:.0}s remaining",
-                        token_preview(&creds.access_token),
+                        "[OAuth] cache expired, age={:.0}s > ttl={:.0}s, re-reading credentials",
                         elapsed.as_secs_f64(),
-                        (TOKEN_CACHE_TTL - elapsed).as_secs_f64()
+                        TOKEN_CACHE_TTL.as_secs_f64()
                     ));
-                    return Ok(creds.access_token.clone());
                 }
-                log_msg(&format!(
-                    "[OAuth] cache expired, age={:.0}s > ttl={:.0}s, re-reading credentials",
-                    elapsed.as_secs_f64(),
-                    TOKEN_CACHE_TTL.as_secs_f64()
-                ));
             } else {
                 log_msg("[OAuth] cache empty, first-time read");
             }
@@ -227,6 +259,7 @@ fn get_oauth_token(force_refresh: bool) -> Result<String, String> {
                 refresh_token: None,
                 cred_name: None,
                 cached_at: Instant::now(),
+                expires_at_ms: None,
             });
         }
         return Ok(token);
@@ -235,17 +268,25 @@ fn get_oauth_token(force_refresh: bool) -> Result<String, String> {
     log_msg("[OAuth] reading from keychain...");
     let keychain = read_credentials_from_system()?;
     log_msg(&format!(
-        "[OAuth] keychain read ok: cred_name={}, token={}, has_refresh={}",
+        "[OAuth] keychain read ok: cred_name={}, token={}, has_refresh={}, expires_at={:?}",
         keychain.cred_name,
         token_preview(&keychain.access_token),
-        keychain.refresh_token.is_some()
+        keychain.refresh_token.is_some(),
+        keychain.expires_at_ms
     ));
+
+    // Check if keychain token is already expired
+    if is_token_expired(keychain.expires_at_ms) {
+        log_msg("[OAuth] keychain token is expired, marking for proactive refresh");
+    }
+
     if let Ok(mut guard) = credentials_cache().lock() {
         *guard = Some(CachedCredentials {
             access_token: keychain.access_token.clone(),
             refresh_token: keychain.refresh_token,
             cred_name: Some(keychain.cred_name),
             cached_at: Instant::now(),
+            expires_at_ms: keychain.expires_at_ms,
         });
     }
     Ok(keychain.access_token)
@@ -311,11 +352,20 @@ async fn refresh_access_token() -> Result<String, String> {
         .to_string();
 
     let new_refresh = data["refresh_token"].as_str().map(ToString::to_string);
+    let new_expires_at = data["expires_at"]
+        .as_u64()
+        .or_else(|| {
+            // If expires_in is provided (seconds), compute absolute expiry
+            data["expires_in"]
+                .as_u64()
+                .map(|secs| now_ms() + secs * 1000)
+        });
 
     log_msg(&format!(
-        "[OAuth] refresh_access_token: new token={}, has_new_refresh={}",
+        "[OAuth] refresh_access_token: new token={}, has_new_refresh={}, expires_at={:?}",
         token_preview(&new_access),
-        new_refresh.is_some()
+        new_refresh.is_some(),
+        new_expires_at
     ));
 
     // Update keychain so the fresh token persists across restarts
@@ -324,7 +374,7 @@ async fn refresh_access_token() -> Result<String, String> {
         log_msg(&format!(
             "[OAuth] refresh_access_token: updating keychain entry '{name}'"
         ));
-        update_keychain(name, &new_access, new_refresh.as_deref());
+        update_keychain(name, &new_access, new_refresh.as_deref(), new_expires_at);
     }
 
     if let Ok(mut guard) = credentials_cache().lock() {
@@ -333,6 +383,7 @@ async fn refresh_access_token() -> Result<String, String> {
             refresh_token: new_refresh,
             cred_name,
             cached_at: Instant::now(),
+            expires_at_ms: new_expires_at,
         });
     }
 
@@ -341,7 +392,12 @@ async fn refresh_access_token() -> Result<String, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn update_keychain(cred_name: &str, access_token: &str, refresh_token: Option<&str>) {
+fn update_keychain(
+    cred_name: &str,
+    access_token: &str,
+    refresh_token: Option<&str>,
+    expires_at_ms: Option<u64>,
+) {
     let output = Command::new("security")
         .args(["find-generic-password", "-s", cred_name, "-w"])
         .output();
@@ -360,6 +416,9 @@ fn update_keychain(cred_name: &str, access_token: &str, refresh_token: Option<&s
     oauth["accessToken"] = serde_json::Value::String(access_token.to_string());
     if let Some(rt) = refresh_token {
         oauth["refreshToken"] = serde_json::Value::String(rt.to_string());
+    }
+    if let Some(exp) = expires_at_ms {
+        oauth["expiresAt"] = serde_json::json!(exp);
     }
 
     let new_json = serde_json::to_string(&creds).unwrap_or_default();
@@ -415,6 +474,7 @@ async fn request_quota(access_token: &str) -> Result<reqwest::Response, String> 
         .header("Accept", "application/json")
         .header("Authorization", format!("Bearer {access_token}"))
         .header("anthropic-beta", "oauth-2025-04-20")
+        .header("User-Agent", "claude-code/1.0.0")
         .timeout(Duration::from_secs(10))
         .send()
         .await
@@ -502,6 +562,36 @@ fn is_rate_limited(status: reqwest::StatusCode) -> bool {
     status == reqwest::StatusCode::TOO_MANY_REQUESTS
 }
 
+/// Check if the cached token is expired and proactively refresh it.
+/// Returns the new token if refresh succeeded, None otherwise.
+async fn try_proactive_refresh() -> Option<String> {
+    let needs_refresh = credentials_cache()
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard
+                .as_ref()
+                .map(|c| is_token_expired(c.expires_at_ms) && c.refresh_token.is_some())
+        })
+        .unwrap_or(false);
+
+    if !needs_refresh {
+        return None;
+    }
+
+    log_msg("[OAuth] token expired, attempting proactive refresh before API call");
+    match refresh_access_token().await {
+        Ok(token) => {
+            log_msg("[OAuth] proactive refresh succeeded");
+            Some(token)
+        }
+        Err(e) => {
+            log_msg(&format!("[OAuth] proactive refresh failed: {e}"));
+            None
+        }
+    }
+}
+
 pub async fn fetch_quota() -> QuotaData {
     log_msg("[Quota] ---- fetch_quota start ----");
 
@@ -518,6 +608,11 @@ pub async fn fetch_quota() -> QuotaData {
         }
     };
 
+    // Proactively refresh if token is expired (based on expiresAt)
+    if let Some(refreshed) = try_proactive_refresh().await {
+        access_token = refreshed;
+    }
+
     let mut response = match request_quota(&access_token).await {
         Ok(resp) => resp,
         Err(error) => {
@@ -530,12 +625,15 @@ pub async fn fetch_quota() -> QuotaData {
     let status = response.status();
     log_msg(&format!("[Quota] initial response: status={status}"));
 
-    // 429: return stale cache if available, don't retry
+    // 429: return stale cache data if available, but always include error
+    // so the frontend can trigger adaptive backoff
     if is_rate_limited(status) {
         log_msg("[Quota] 429 rate limited, returning stale cache if available");
-        return get_stale_cached_quota().unwrap_or_else(|| {
-            QuotaData::disconnected("API error: 429 Too Many Requests")
-        });
+        if let Some(mut stale) = get_stale_cached_quota() {
+            stale.error = Some("API error: 429 Too Many Requests".to_string());
+            return stale;
+        }
+        return QuotaData::disconnected("API error: 429 Too Many Requests");
     }
 
     if is_auth_error(status) {
@@ -567,9 +665,11 @@ pub async fn fetch_quota() -> QuotaData {
 
         if is_rate_limited(status2) {
             log_msg("[Quota] 429 after keychain retry, returning stale cache");
-            return get_stale_cached_quota().unwrap_or_else(|| {
-                QuotaData::disconnected("API error: 429 Too Many Requests")
-            });
+            if let Some(mut stale) = get_stale_cached_quota() {
+                stale.error = Some("API error: 429 Too Many Requests".to_string());
+                return stale;
+            }
+            return QuotaData::disconnected("API error: 429 Too Many Requests");
         }
 
         // Keychain token also expired — try OAuth refresh
