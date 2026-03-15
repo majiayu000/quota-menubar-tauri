@@ -12,7 +12,8 @@ Tauri v2 menubar/tray app for monitoring Claude and Codex quota usage on macOS a
 - Left click tray icon toggles the quota panel.
 - Right click menu provides `Show / Hide Window` and `Quit`.
 - Claude and Codex are separated into independent tabs and polling flows.
-- Quota polling runs every 60 seconds in the background.
+- Quota polling runs every 60 seconds in the background, with adaptive backoff to 5 minutes on 429.
+- OAuth token is proactively refreshed before expiry (30-minute buffer) using the keychain `expiresAt` field.
 - macOS tray mode disables webview background throttling so hidden windows keep polling.
 - Tray percentage now represents **used quota** (not remaining quota).
 
@@ -107,9 +108,15 @@ cd src-tauri && cargo test
   - check menu bar manager hidden area (Ice/Bartender)
   - ensure app is not auto-grouped into hidden extras
 - No quota data:
-  - Claude on macOS: ensure Claude Code login exists in macOS Keychain
+  - Claude on macOS: ensure Claude Code login exists in macOS Keychain (`claude login`)
   - Claude on Windows/Linux: set `CLAUDE_CODE_OAUTH_TOKEN` environment variable
   - Codex: ensure `~/.codex/auth.json` is valid and not expired
+- Token expired after long idle (24h+):
+  - App auto-refreshes using the keychain refresh token — no manual action needed
+  - If refresh fails, run `claude login` in terminal
+- Persistent 429 rate limiting:
+  - App uses `User-Agent: claude-code/*` header to avoid strict rate limit buckets
+  - On 429, app serves stale cached data and backs off polling to 5 minutes
 - Codex token expired:
   - run `codex` login flow again
 
