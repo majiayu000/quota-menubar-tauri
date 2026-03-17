@@ -49,7 +49,7 @@ function getSavedDockHidden(): boolean {
 }
 
 function formatResetTime(resetTime?: string): string {
-  if (!resetTime) return 'Unknown';
+  if (!resetTime) return 'N/A';
   try {
     const reset = new Date(resetTime);
     const now = new Date();
@@ -65,7 +65,7 @@ function formatResetTime(resetTime?: string): string {
     }
     return `${hours}h ${minutes}m`;
   } catch {
-    return 'Unknown';
+    return 'N/A';
   }
 }
 

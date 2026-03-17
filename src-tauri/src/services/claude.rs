@@ -159,10 +159,17 @@ struct KeychainCredentials {
 
 #[cfg(target_os = "macos")]
 fn read_credentials_from_system() -> Result<KeychainCredentials, String> {
+    let username = std::env::var("USER").unwrap_or_default();
+
     for cred_name in CREDENTIAL_NAMES {
-        let output = Command::new("security")
-            .args(["find-generic-password", "-s", cred_name, "-w"])
-            .output();
+        // Use -a $USER to match the exact keychain entry that Claude Code CLI uses
+        let mut args = vec!["find-generic-password"];
+        if !username.is_empty() {
+            args.extend(["-a", &username]);
+        }
+        args.extend(["-s", cred_name, "-w"]);
+
+        let output = Command::new("security").args(&args).output();
 
         if let Ok(result) = output {
             if result.status.success() {
