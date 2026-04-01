@@ -1,11 +1,13 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
-import QuotaCard from './components/QuotaCard';
+import { listen } from '@tauri-apps/api/event';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import ActionButtons from './components/ActionButtons';
-import ThemeSelector, { ThemeName } from './components/ThemeSelector';
-import TabSwitcher, { TabName } from './components/TabSwitcher';
 import CodexPanel from './components/CodexPanel';
+import OverviewPanel from './components/OverviewPanel';
+import QuotaCard from './components/QuotaCard';
+import TabSwitcher, { TabName } from './components/TabSwitcher';
+import ThemeSelector, { ThemeName } from './components/ThemeSelector';
 import { backend } from './services/backend';
-import type { QuotaData } from './types/models';
+import type { CodexRateLimits, CodexSnapshot, QuotaData } from './types/models';
 import './styles.css';
 
 const THEME_STORAGE_KEY = 'claude-quota-theme';
@@ -13,6 +15,16 @@ const DOCK_HIDDEN_KEY = 'claude-quota-dock-hidden';
 const TAB_STORAGE_KEY = 'claude-quota-tab';
 const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
 const BACKOFF_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const TRAY_SHOW_OVERVIEW_EVENT = 'tray://show-overview';
+const TRAY_REFRESH_ALL_EVENT = 'tray://refresh-all';
+
+const EMPTY_CODEX_SNAPSHOT: CodexSnapshot = {
+  info: null,
+  stats: null,
+  rateLimits: null,
+  loading: true,
+  error: null,
+};
 
 function isMacOSPlatform(): boolean {
   if (typeof navigator === 'undefined') return false;
@@ -24,17 +36,20 @@ function isMacOSPlatform(): boolean {
 function getSavedTab(): TabName {
   try {
     const saved = localStorage.getItem(TAB_STORAGE_KEY);
-    if (saved === 'claude' || saved === 'codex') {
+    if (saved === 'overview' || saved === 'claude' || saved === 'codex') {
       return saved;
     }
   } catch {}
-  return 'claude';
+  return 'overview';
 }
 
 function getSavedTheme(): ThemeName {
   try {
     const saved = localStorage.getItem(THEME_STORAGE_KEY);
-    if (saved && ['light', 'dark', 'claude', 'claude-dark', 'minimal', 'minimal-dark', 'ocean'].includes(saved)) {
+    if (
+      saved &&
+      ['light', 'dark', 'claude', 'claude-dark', 'minimal', 'minimal-dark', 'ocean'].includes(saved)
+    ) {
       return saved as ThemeName;
     }
   } catch {}
@@ -52,13 +67,11 @@ function formatResetTime(resetTime?: string): string {
   if (!resetTime) return 'N/A';
   try {
     const reset = new Date(resetTime);
-    const now = new Date();
-    const diff = reset.getTime() - now.getTime();
+    const diff = reset.getTime() - Date.now();
     if (diff <= 0) return 'Soon';
 
     const hours = Math.floor(diff / (1000 * 60 * 60));
     const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-
     if (hours > 24) {
       const days = Math.floor(hours / 24);
       return `${days}d ${hours % 24}h`;
@@ -71,62 +84,69 @@ function formatResetTime(resetTime?: string): string {
 
 function getClaudeTrayUsedPercent(quota: QuotaData | null): number | null {
   if (!quota) return null;
-
-  if (quota.weeklyTotal) {
-    return quota.weeklyTotal.percentage;
-  }
+  if (quota.weeklyTotal) return quota.weeklyTotal.percentage;
 
   const weeklyUsedCandidates = [quota.weeklyOpus?.percentage, quota.weeklySonnet?.percentage]
     .filter((value): value is number => typeof value === 'number');
   if (weeklyUsedCandidates.length > 0) {
     return Math.max(...weeklyUsedCandidates);
   }
+  return quota.session?.percentage ?? null;
+}
 
-  if (quota.session) {
-    return quota.session.percentage;
+function getCodexTrayUsedPercent(limits: CodexRateLimits | null): number | null {
+  if (!limits) return null;
+  if (limits.secondary?.usedPercent != null) {
+    return limits.secondary.usedPercent;
   }
-
+  if (limits.primary?.usedPercent != null) {
+    return limits.primary.usedPercent;
+  }
   return null;
+}
+
+function getCodexConnected(snapshot: CodexSnapshot): boolean {
+  return Boolean(snapshot.rateLimits?.connected) || Boolean(snapshot.info?.connected);
 }
 
 export default function App() {
   const isMacOS = isMacOSPlatform();
 
-  // Claude state
   const [quota, setQuota] = useState<QuotaData | null>(null);
   const [claudeLoading, setClaudeLoading] = useState(false);
   const [claudeError, setClaudeError] = useState<string | null>(null);
   const claudeIntervalRef = useRef(AUTO_REFRESH_INTERVAL_MS);
 
-  // Codex state
-  const [codexConnected, setCodexConnected] = useState(false);
-  const [codexUsedPercent, setCodexUsedPercent] = useState<number | null>(null);
-  const [codexLoading, setCodexLoading] = useState(false);
+  const [codexSnapshot, setCodexSnapshot] = useState<CodexSnapshot>(EMPTY_CODEX_SNAPSHOT);
   const [codexManualRefreshNonce, setCodexManualRefreshNonce] = useState(0);
 
-  // UI state
   const [theme, setTheme] = useState<ThemeName>(getSavedTheme);
   const [dockHidden, setDockHidden] = useState<boolean>(getSavedDockHidden);
   const [toast, setToast] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabName>(getSavedTab);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Auto-resize window
+  const codexConnected = getCodexConnected(codexSnapshot);
+  const codexLoading = codexSnapshot.loading;
+
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast(null), 2000);
+  }, []);
+
   useEffect(() => {
     const updateHeight = async () => {
-      if (containerRef.current) {
-        const height = containerRef.current.scrollHeight + 24;
-        try {
-          await backend.resizeWindow(Math.min(Math.max(height, 300), 600));
-        } catch (err) {
-          console.error('Failed to resize window:', err);
-        }
+      if (!containerRef.current) return;
+      const height = containerRef.current.scrollHeight + 24;
+      try {
+        await backend.resizeWindow(Math.min(Math.max(height, 300), 680));
+      } catch {
+        showToast('Failed to resize window');
       }
     };
 
     const timer1 = setTimeout(updateHeight, 50);
     const timer2 = setTimeout(updateHeight, 300);
-
     const observer = new ResizeObserver(() => {
       updateHeight();
     });
@@ -134,24 +154,13 @@ export default function App() {
     if (containerRef.current) {
       observer.observe(containerRef.current);
     }
-
     return () => {
       clearTimeout(timer1);
       clearTimeout(timer2);
       observer.disconnect();
     };
-  }, [activeTab, quota, codexConnected]);
+  }, [activeTab, quota, codexSnapshot, codexConnected, showToast]);
 
-  // Update tray icon based on active tab
-  const updateTrayIcon = useCallback(async (percentage: number) => {
-    try {
-      await backend.updateTrayIcon(percentage);
-    } catch (err) {
-      console.error('Failed to update tray icon:', err);
-    }
-  }, []);
-
-  // Fetch Claude quota for startup/manual/background refresh.
   const fetchClaudeQuota = useCallback(async () => {
     try {
       setClaudeLoading(true);
@@ -160,18 +169,15 @@ export default function App() {
 
       if (data.error) {
         setClaudeError(data.error);
-        // On 429, keep showing stale quota data if we have it
         if (!data.error.includes('429')) {
           setQuota(null);
         }
-        // Back off polling on 429
         if (data.error.includes('429')) {
           claudeIntervalRef.current = BACKOFF_REFRESH_INTERVAL_MS;
         }
       } else {
         setQuota(data);
         setClaudeError(null);
-        // Reset to normal interval on success
         claudeIntervalRef.current = AUTO_REFRESH_INTERVAL_MS;
       }
     } catch (err) {
@@ -181,12 +187,10 @@ export default function App() {
     }
   }, []);
 
-  // Load Claude data on startup.
   useEffect(() => {
     fetchClaudeQuota();
   }, [fetchClaudeQuota]);
 
-  // Auto-refresh Claude data in background with adaptive interval.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
     const schedule = () => {
@@ -198,25 +202,40 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [fetchClaudeQuota]);
 
-  // Update tray icon when active tab or data changes
-  // Tray icon shows USED percentage.
   useEffect(() => {
-    if (activeTab === 'claude') {
-      // Claude tray percentage prefers weekly quota windows over session window.
-      const used = getClaudeTrayUsedPercent(quota);
-      if (used !== null) {
-        updateTrayIcon(used);
-        return;
-      }
-    } else if (activeTab === 'codex' && codexUsedPercent !== null) {
-      // Codex passes used percentage.
-      updateTrayIcon(codexUsedPercent);
-      return;
-    }
+    backend
+      .updateTrayIcon({
+        claudeConnected: quota?.connected ?? false,
+        claudePercentage: getClaudeTrayUsedPercent(quota),
+        codexConnected,
+        codexPercentage: getCodexTrayUsedPercent(codexSnapshot.rateLimits),
+      })
+      .catch(() => {
+        showToast('Failed to update tray');
+      });
+  }, [quota, codexConnected, codexSnapshot.rateLimits, showToast]);
 
-    // Keep a visible numeric tray title even before data is ready.
-    updateTrayIcon(0);
-  }, [activeTab, quota, codexUsedPercent, codexLoading, updateTrayIcon]);
+  useEffect(() => {
+    let stopShowOverview: (() => void) | undefined;
+    let stopRefreshAll: (() => void) | undefined;
+
+    const bindTrayEvents = async () => {
+      stopShowOverview = await listen(TRAY_SHOW_OVERVIEW_EVENT, () => {
+        setActiveTab('overview');
+      });
+
+      stopRefreshAll = await listen(TRAY_REFRESH_ALL_EVENT, () => {
+        fetchClaudeQuota();
+        setCodexManualRefreshNonce((value) => value + 1);
+      });
+    };
+
+    void bindTrayEvents();
+    return () => {
+      stopShowOverview?.();
+      stopRefreshAll?.();
+    };
+  }, [fetchClaudeQuota]);
 
   const handleThemeChange = useCallback((newTheme: ThemeName) => {
     setTheme(newTheme);
@@ -225,12 +244,11 @@ export default function App() {
     } catch {}
   }, []);
 
-  // Apply dock visibility from current toggle state on startup and on changes.
   useEffect(() => {
-    backend.setDockVisibility(!dockHidden).catch((err) => {
-      console.error('Failed to apply dock visibility:', err);
+    backend.setDockVisibility(!dockHidden).catch(() => {
+      showToast('Failed to apply dock visibility');
     });
-  }, [dockHidden]);
+  }, [dockHidden, showToast]);
 
   const handleDockToggle = useCallback(() => {
     setDockHidden((prev) => {
@@ -249,16 +267,40 @@ export default function App() {
     } catch {}
   }, []);
 
+  const refreshCodex = useCallback(() => {
+    setCodexManualRefreshNonce((value) => value + 1);
+  }, []);
+
   const handleRefresh = useCallback(() => {
+    if (activeTab === 'overview') {
+      fetchClaudeQuota();
+      refreshCodex();
+      return;
+    }
     if (activeTab === 'claude') {
       fetchClaudeQuota();
       return;
     }
-    setCodexManualRefreshNonce((value) => value + 1);
-  }, [activeTab, fetchClaudeQuota]);
+    refreshCodex();
+  }, [activeTab, fetchClaudeQuota, refreshCodex]);
+
+  const openBothDashboards = useCallback(async () => {
+    const results = await Promise.allSettled([
+      backend.openClaudeDashboard(),
+      backend.openCodexDashboard(),
+    ]);
+
+    if (results.some((result) => result.status === 'rejected')) {
+      showToast('Failed to open one or more dashboards');
+    }
+  }, [showToast]);
 
   const handleOpenDashboard = useCallback(async () => {
     try {
+      if (activeTab === 'overview') {
+        await openBothDashboards();
+        return;
+      }
       if (activeTab === 'claude') {
         await backend.openClaudeDashboard();
       } else {
@@ -266,23 +308,17 @@ export default function App() {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to open dashboard';
-      setToast(message);
-      setTimeout(() => setToast(null), 2000);
+      showToast(message);
     }
-  }, [activeTab]);
+  }, [activeTab, openBothDashboards, showToast]);
 
   const handleQuit = async () => {
     try {
       await backend.quitApp();
-    } catch (err) {
-      console.error('Failed to quit:', err);
+    } catch {
+      showToast('Failed to quit app');
     }
   };
-
-  // Callback from CodexPanel to update usage percentage for tray icon
-  const handleCodexUsageChange = useCallback((usedPercent: number | null) => {
-    setCodexUsedPercent(usedPercent);
-  }, []);
 
   return (
     <div className={`app theme-${theme}`}>
@@ -301,16 +337,31 @@ export default function App() {
             {isMacOS && (
               <label className="dock-toggle">
                 <span className="toggle-label">Hide Dock</span>
-                <input
-                  type="checkbox"
-                  checked={dockHidden}
-                  onChange={handleDockToggle}
-                />
+                <input type="checkbox" checked={dockHidden} onChange={handleDockToggle} />
               </label>
             )}
           </div>
           <ThemeSelector currentTheme={theme} onThemeChange={handleThemeChange} />
         </div>
+
+        {activeTab === 'overview' && (
+          <OverviewPanel
+            claudeQuota={quota}
+            claudeLoading={claudeLoading}
+            claudeError={claudeError}
+            codexSnapshot={codexSnapshot}
+            onOpenClaudeDashboard={() => {
+              backend.openClaudeDashboard().catch(() => {
+                showToast('Failed to open Claude dashboard');
+              });
+            }}
+            onOpenCodexDashboard={() => {
+              backend.openCodexDashboard().catch(() => {
+                showToast('Failed to open Codex dashboard');
+              });
+            }}
+          />
+        )}
 
         {activeTab === 'claude' && (
           <>
@@ -342,7 +393,6 @@ export default function App() {
 
                 <div className="section">
                   <div className="section-title">WEEKLY LIMITS</div>
-
                   {quota.weeklyTotal && (
                     <QuotaCard
                       label="7-Day Usage"
@@ -387,11 +437,9 @@ export default function App() {
 
         <div style={{ display: activeTab === 'codex' ? 'block' : 'none' }}>
           <CodexPanel
-            onConnectionChange={setCodexConnected}
-            onUsageChange={handleCodexUsageChange}
-            onLoadingChange={setCodexLoading}
             manualRefreshNonce={codexManualRefreshNonce}
             autoRefreshIntervalMs={AUTO_REFRESH_INTERVAL_MS}
+            onSnapshotChange={setCodexSnapshot}
           />
         </div>
 
@@ -399,7 +447,14 @@ export default function App() {
           onRefresh={handleRefresh}
           onDashboard={handleOpenDashboard}
           onQuit={handleQuit}
-          loading={activeTab === 'claude' ? claudeLoading : codexLoading}
+          loading={
+            activeTab === 'overview'
+              ? claudeLoading || codexLoading
+              : activeTab === 'claude'
+                ? claudeLoading
+                : codexLoading
+          }
+          dashboardLabel={activeTab === 'overview' ? 'Dashboards' : 'Dashboard'}
         />
       </div>
     </div>

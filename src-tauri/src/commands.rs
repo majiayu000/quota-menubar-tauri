@@ -1,7 +1,7 @@
 use tauri::{AppHandle, State};
 
 use crate::{
-    domain::models::{CodexData, CodexRateLimits, CodexStats, QuotaData},
+    domain::models::{CodexData, CodexRateLimits, CodexStats, QuotaData, TrayDisplayData},
     services::{claude, codex, link, tray, window},
 };
 
@@ -49,9 +49,9 @@ pub async fn set_dock_visibility(app: AppHandle, visible: bool) -> Result<(), St
 pub async fn update_tray_icon(
     app: AppHandle,
     tray_state: State<'_, tray::TrayState>,
-    percentage: u8,
+    payload: TrayDisplayData,
 ) -> Result<(), String> {
-    tray::update_tray_tooltip(app, tray_state, percentage).await
+    tray::update_tray_tooltip(app, tray_state, payload).await
 }
 
 #[tauri::command]
