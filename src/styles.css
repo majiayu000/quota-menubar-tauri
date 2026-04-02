@@ -374,6 +374,7 @@ html, body, #root {
 
 .tray-toggle {
   justify-content: space-between;
+  cursor: default;
 }
 
 .tray-toggle-copy {
@@ -394,6 +395,47 @@ html, body, #root {
 
 .tray-toggle-status.disconnected {
   color: var(--text-muted);
+}
+
+.tray-toggle-button {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 32px;
+  height: 18px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-hover);
+  cursor: pointer;
+  transition: all 0.16s ease;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.tray-toggle-button.checked {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+}
+
+.tray-toggle-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 60%, white);
+  outline-offset: 2px;
+}
+
+.tray-toggle-thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 0.16s ease;
+}
+
+.tray-toggle-button.checked .tray-toggle-thumb {
+  transform: translateX(14px);
 }
 
 .theme-btn {

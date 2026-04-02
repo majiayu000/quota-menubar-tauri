@@ -16,19 +16,24 @@ function renderToggle(
   onToggle: (service: TrayServiceName) => void,
 ) {
   return (
-    <label className="dock-toggle tray-toggle" key={service}>
+    <div className="dock-toggle tray-toggle" key={service}>
       <span className="tray-toggle-copy">
         <span className="toggle-label">{label}</span>
         <span className={`tray-toggle-status ${connected ? 'connected' : 'disconnected'}`}>
           {connected ? 'Connected' : 'Placeholder until login'}
         </span>
       </span>
-      <input
-        type="checkbox"
-        checked={enabled}
-        onChange={() => onToggle(service)}
-      />
-    </label>
+      <button
+        type="button"
+        role="switch"
+        className={`tray-toggle-button ${enabled ? 'checked' : ''}`}
+        aria-checked={enabled}
+        aria-label={`${label} toggle`}
+        onClick={() => onToggle(service)}
+      >
+        <span className="tray-toggle-thumb" />
+      </button>
+    </div>
   );
 }
 
