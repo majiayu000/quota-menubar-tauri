@@ -358,6 +358,44 @@ html, body, #root {
   user-select: none;
 }
 
+.tray-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 2px;
+  border-top: 1px solid var(--border-color);
+}
+
+.tray-toggle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.tray-toggle {
+  justify-content: space-between;
+}
+
+.tray-toggle-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tray-toggle-status {
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.tray-toggle-status.connected {
+  color: var(--color-good);
+}
+
+.tray-toggle-status.disconnected {
+  color: var(--text-muted);
+}
+
 .theme-btn {
   flex-shrink: 0;
   width: 23px;

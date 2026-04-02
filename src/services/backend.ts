@@ -28,10 +28,11 @@ export const backend = {
     return invoke<void>('open_codex_dashboard');
   },
 
-  updateTrayIcon(service: TrayService, percentage: number | null) {
+  updateTrayIcon(service: TrayService, percentage: number | null, visible: boolean) {
     return invoke<void>('update_tray_icon', {
       service,
       percentage: percentage == null ? null : Math.round(percentage),
+      visible,
     });
   },
 

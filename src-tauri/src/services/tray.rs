@@ -170,6 +170,7 @@ fn build_service_tray(app: &AppHandle, service: TrayService) -> tauri::Result<()
 
     let _ = tray.set_visible(true);
     let _ = tray.set_icon_as_template(false);
+    let _ = tray.set_visible(false);
     Ok(())
 }
 
@@ -195,6 +196,7 @@ pub async fn update_tray_icon(
     _tray_state: State<'_, TrayState>,
     service: TrayService,
     percentage: Option<u8>,
+    visible: bool,
 ) -> Result<(), String> {
     let (tx, rx) = mpsc::channel();
     let app_handle = app.clone();
@@ -204,6 +206,11 @@ pub async fn update_tray_icon(
             let Some(tray) = app_handle.tray_by_id(service.tray_id()) else {
                 return Ok(());
             };
+
+            if !visible {
+                tray.set_visible(false).map_err(|e| e.to_string())?;
+                return Ok(());
+            }
 
             let icon = Image::from_bytes(&tray_icon::generate_tray_icon(percentage, ICON_SIZE))
                 .map_err(|e| e.to_string())?;

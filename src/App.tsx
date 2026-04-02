@@ -4,7 +4,14 @@ import ActionButtons from './components/ActionButtons';
 import ThemeSelector, { ThemeName } from './components/ThemeSelector';
 import TabSwitcher, { TabName } from './components/TabSwitcher';
 import CodexPanel from './components/CodexPanel';
+import TrayToggles from './components/TrayToggles';
 import { backend } from './services/backend';
+import {
+  getSavedTrayEnabled,
+  saveTrayEnabled,
+  shouldShowTray,
+  type TrayServiceName,
+} from './services/tray_visibility';
 import type { QuotaData } from './types/models';
 import './styles.css';
 
@@ -107,6 +114,8 @@ export default function App() {
   // UI state
   const [theme, setTheme] = useState<ThemeName>(getSavedTheme);
   const [dockHidden, setDockHidden] = useState<boolean>(getSavedDockHidden);
+  const [claudeTrayEnabled, setClaudeTrayEnabled] = useState<boolean>(() => getSavedTrayEnabled('claude'));
+  const [codexTrayEnabled, setCodexTrayEnabled] = useState<boolean>(() => getSavedTrayEnabled('codex'));
   const [toast, setToast] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabName>(getSavedTab);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -142,9 +151,13 @@ export default function App() {
     };
   }, [activeTab, quota, codexConnected]);
 
-  const updateTrayIcon = useCallback(async (service: 'claude' | 'codex', percentage: number | null) => {
+  const updateTrayIcon = useCallback(async (
+    service: TrayServiceName,
+    percentage: number | null,
+    visible: boolean,
+  ) => {
     try {
-      await backend.updateTrayIcon(service, percentage);
+      await backend.updateTrayIcon(service, percentage, visible);
     } catch (err) {
       console.error(`Failed to update ${service} tray icon:`, err);
     }
@@ -198,12 +211,20 @@ export default function App() {
   }, [fetchClaudeQuota]);
 
   useEffect(() => {
-    updateTrayIcon('claude', getClaudeTrayUsedPercent(quota));
-  }, [quota, updateTrayIcon]);
+    updateTrayIcon(
+      'claude',
+      getClaudeTrayUsedPercent(quota),
+      shouldShowTray(claudeTrayEnabled, quota?.connected ?? false),
+    );
+  }, [quota, claudeTrayEnabled, updateTrayIcon]);
 
   useEffect(() => {
-    updateTrayIcon('codex', codexUsedPercent);
-  }, [codexUsedPercent, updateTrayIcon]);
+    updateTrayIcon(
+      'codex',
+      codexUsedPercent,
+      shouldShowTray(codexTrayEnabled, codexConnected),
+    );
+  }, [codexUsedPercent, codexConnected, codexTrayEnabled, updateTrayIcon]);
 
   const handleThemeChange = useCallback((newTheme: ThemeName) => {
     setTheme(newTheme);
@@ -226,6 +247,23 @@ export default function App() {
         localStorage.setItem(DOCK_HIDDEN_KEY, String(newValue));
       } catch {}
       return newValue;
+    });
+  }, []);
+
+  const handleTrayToggle = useCallback((service: TrayServiceName) => {
+    if (service === 'claude') {
+      setClaudeTrayEnabled((prev) => {
+        const next = !prev;
+        saveTrayEnabled('claude', next);
+        return next;
+      });
+      return;
+    }
+
+    setCodexTrayEnabled((prev) => {
+      const next = !prev;
+      saveTrayEnabled('codex', next);
+      return next;
     });
   }, []);
 
@@ -297,6 +335,13 @@ export default function App() {
             )}
           </div>
           <ThemeSelector currentTheme={theme} onThemeChange={handleThemeChange} />
+          <TrayToggles
+            claudeEnabled={claudeTrayEnabled}
+            codexEnabled={codexTrayEnabled}
+            claudeConnected={quota?.connected ?? false}
+            codexConnected={codexConnected}
+            onToggle={handleTrayToggle}
+          />
         </div>
 
         {activeTab === 'claude' && (

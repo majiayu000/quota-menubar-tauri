@@ -51,8 +51,9 @@ pub async fn update_tray_icon(
     tray_state: State<'_, tray::TrayState>,
     service: tray::TrayService,
     percentage: Option<u8>,
+    visible: bool,
 ) -> Result<(), String> {
-    tray::update_tray_icon(app, tray_state, service, percentage).await
+    tray::update_tray_icon(app, tray_state, service, percentage, visible).await
 }
 
 #[tauri::command]
