@@ -59,6 +59,10 @@ fn usage_color(used_percent: u8) -> (u8, u8, u8) {
     }
 }
 
+fn neutral_color() -> (u8, u8, u8) {
+    (148, 163, 184)
+}
+
 fn encode_png(img: &RgbaImage, size: u32) -> Vec<u8> {
     let mut png_bytes = Vec::new();
     let encoder = image::codecs::png::PngEncoder::new(&mut png_bytes);
@@ -68,19 +72,19 @@ fn encode_png(img: &RgbaImage, size: u32) -> Vec<u8> {
     png_bytes
 }
 
-pub fn generate_tray_icon(used_percent: u8, size: u32) -> Vec<u8> {
+pub fn generate_tray_icon(used_percent: Option<u8>, size: u32) -> Vec<u8> {
     let mut img: RgbaImage = ImageBuffer::new(size, size);
-    let pct = used_percent.min(99);
     let center = size as f32 / 2.0;
-    let (pr, pg, pb) = usage_color(pct);
+    let pct = used_percent.map(|value| value.min(99));
+    let (pr, pg, pb) = pct.map(usage_color).unwrap_or_else(neutral_color);
 
     let ring_width = if size >= 44 { 7.0 } else { 3.5 };
     let outer_radius = center;
     let inner_radius = outer_radius - ring_width;
-
-    // Used quota ring, starts at top and goes clockwise.
     let start_angle = -std::f32::consts::FRAC_PI_2;
-    let progress_angle = start_angle + (2.0 * std::f32::consts::PI * (pct as f32 / 100.0));
+    let progress_angle = pct.map(|value| {
+        start_angle + (2.0 * std::f32::consts::PI * (value as f32 / 100.0))
+    });
 
     for y in 0..size {
         for x in 0..size {
@@ -103,28 +107,33 @@ pub fn generate_tray_icon(used_percent: u8, size: u32) -> Vec<u8> {
             };
 
             let alpha = (255.0 * ring_mask) as u8;
-            if normalized <= progress_angle {
-                img.put_pixel(x, y, Rgba([pr, pg, pb, alpha]));
+            if let Some(progress_angle) = progress_angle {
+                if normalized <= progress_angle {
+                    img.put_pixel(x, y, Rgba([pr, pg, pb, alpha]));
+                } else {
+                    img.put_pixel(x, y, Rgba([130, 130, 130, (100.0 * ring_mask) as u8]));
+                }
             } else {
-                img.put_pixel(x, y, Rgba([130, 130, 130, (100.0 * ring_mask) as u8]));
+                img.put_pixel(x, y, Rgba([pr, pg, pb, (130.0 * ring_mask) as u8]));
             }
         }
     }
 
-    let scale = if size >= 44 { 3 } else { 1 };
-    let digit_w = DIGIT_WIDTH * scale;
-    let digit_h = DIGIT_HEIGHT * scale;
-    let spacing = if size >= 44 { 2 } else { 1 };
+    if let Some(pct) = pct {
+        let scale = if size >= 44 { 3 } else { 1 };
+        let digit_w = DIGIT_WIDTH * scale;
+        let digit_h = DIGIT_HEIGHT * scale;
+        let spacing = if size >= 44 { 2 } else { 1 };
+        let d1 = pct / 10;
+        let d2 = pct % 10;
+        let total_width = 2 * digit_w + spacing;
+        let start_x = ((size as i32 - total_width as i32) / 2).max(0);
+        let start_y = ((size as i32 - digit_h as i32) / 2).max(0);
+        let text = Rgba([255, 255, 255, 255]);
 
-    let d1 = pct / 10;
-    let d2 = pct % 10;
-    let total_width = 2 * digit_w + spacing;
-    let start_x = ((size as i32 - total_width as i32) / 2).max(0);
-    let start_y = ((size as i32 - digit_h as i32) / 2).max(0);
-    let text = Rgba([255, 255, 255, 255]);
-
-    draw_digit(&mut img, d1, start_x, start_y, scale, text);
-    draw_digit(&mut img, d2, start_x + (digit_w + spacing) as i32, start_y, scale, text);
+        draw_digit(&mut img, d1, start_x, start_y, scale, text);
+        draw_digit(&mut img, d2, start_x + (digit_w + spacing) as i32, start_y, scale, text);
+    }
 
     encode_png(&img, size)
 }
@@ -135,7 +144,13 @@ mod tests {
 
     #[test]
     fn generate_icon_returns_png_bytes() {
-        let bytes = generate_tray_icon(73, 44);
+        let bytes = generate_tray_icon(Some(73), 44);
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn generate_placeholder_icon_returns_png_bytes() {
+        let bytes = generate_tray_icon(None, 44);
         assert!(!bytes.is_empty());
     }
 

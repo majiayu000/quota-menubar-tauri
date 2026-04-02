@@ -142,12 +142,11 @@ export default function App() {
     };
   }, [activeTab, quota, codexConnected]);
 
-  // Update tray icon based on active tab
-  const updateTrayIcon = useCallback(async (percentage: number) => {
+  const updateTrayIcon = useCallback(async (service: 'claude' | 'codex', percentage: number | null) => {
     try {
-      await backend.updateTrayIcon(percentage);
+      await backend.updateTrayIcon(service, percentage);
     } catch (err) {
-      console.error('Failed to update tray icon:', err);
+      console.error(`Failed to update ${service} tray icon:`, err);
     }
   }, []);
 
@@ -198,25 +197,13 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [fetchClaudeQuota]);
 
-  // Update tray icon when active tab or data changes
-  // Tray icon shows USED percentage.
   useEffect(() => {
-    if (activeTab === 'claude') {
-      // Claude tray percentage prefers weekly quota windows over session window.
-      const used = getClaudeTrayUsedPercent(quota);
-      if (used !== null) {
-        updateTrayIcon(used);
-        return;
-      }
-    } else if (activeTab === 'codex' && codexUsedPercent !== null) {
-      // Codex passes used percentage.
-      updateTrayIcon(codexUsedPercent);
-      return;
-    }
+    updateTrayIcon('claude', getClaudeTrayUsedPercent(quota));
+  }, [quota, updateTrayIcon]);
 
-    // Keep a visible numeric tray title even before data is ready.
-    updateTrayIcon(0);
-  }, [activeTab, quota, codexUsedPercent, codexLoading, updateTrayIcon]);
+  useEffect(() => {
+    updateTrayIcon('codex', codexUsedPercent);
+  }, [codexUsedPercent, updateTrayIcon]);
 
   const handleThemeChange = useCallback((newTheme: ThemeName) => {
     setTheme(newTheme);

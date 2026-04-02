@@ -49,9 +49,10 @@ pub async fn set_dock_visibility(app: AppHandle, visible: bool) -> Result<(), St
 pub async fn update_tray_icon(
     app: AppHandle,
     tray_state: State<'_, tray::TrayState>,
-    percentage: u8,
+    service: tray::TrayService,
+    percentage: Option<u8>,
 ) -> Result<(), String> {
-    tray::update_tray_tooltip(app, tray_state, percentage).await
+    tray::update_tray_icon(app, tray_state, service, percentage).await
 }
 
 #[tauri::command]

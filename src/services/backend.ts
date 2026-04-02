@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { CodexData, CodexRateLimits, CodexStats, QuotaData } from '../types/models';
 
+type TrayService = 'claude' | 'codex';
+
 export const backend = {
   getQuota() {
     return invoke<QuotaData>('get_quota');
@@ -26,8 +28,11 @@ export const backend = {
     return invoke<void>('open_codex_dashboard');
   },
 
-  updateTrayIcon(percentage: number) {
-    return invoke<void>('update_tray_icon', { percentage: Math.round(percentage) });
+  updateTrayIcon(service: TrayService, percentage: number | null) {
+    return invoke<void>('update_tray_icon', {
+      service,
+      percentage: percentage == null ? null : Math.round(percentage),
+    });
   },
 
   resizeWindow(height: number) {
