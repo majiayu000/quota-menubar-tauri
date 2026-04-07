@@ -417,6 +417,11 @@ html, body, #root {
   border-color: var(--accent-color);
 }
 
+.tray-toggle-button.disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .tray-toggle-button:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent-color) 60%, white);
   outline-offset: 2px;

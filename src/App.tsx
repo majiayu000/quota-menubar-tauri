@@ -22,10 +22,14 @@ const TAB_STORAGE_KEY = 'claude-quota-tab';
 const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
 const BACKOFF_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const TRAY_SERVICE_ACTIVATED_EVENT = 'tray-service-activated';
+const TRAY_GUARD_TOAST_MS = 2000;
+const TRAY_GUARD_MESSAGE = 'At least one tray must remain enabled';
 
 interface TrayServiceActivatedPayload {
   service: TrayServiceName;
 }
+
+type TrayEnabledState = Record<TrayServiceName, boolean>;
 
 function isMacOSPlatform(): boolean {
   if (typeof navigator === 'undefined') return false;
@@ -59,6 +63,19 @@ function getSavedDockHidden(): boolean {
     return localStorage.getItem(DOCK_HIDDEN_KEY) === 'true';
   } catch {}
   return false;
+}
+
+function getInitialTrayEnabledState(): TrayEnabledState {
+  const claude = getSavedTrayEnabled('claude');
+  const codex = getSavedTrayEnabled('codex');
+
+  if (!claude && !codex) {
+    saveTrayEnabled('claude', true);
+    saveTrayEnabled('codex', false);
+    return { claude: true, codex: false };
+  }
+
+  return { claude, codex };
 }
 
 function formatResetTime(resetTime?: string): string {
@@ -120,11 +137,12 @@ export default function App() {
   // UI state
   const [theme, setTheme] = useState<ThemeName>(getSavedTheme);
   const [dockHidden, setDockHidden] = useState<boolean>(getSavedDockHidden);
-  const [claudeTrayEnabled, setClaudeTrayEnabled] = useState<boolean>(() => getSavedTrayEnabled('claude'));
-  const [codexTrayEnabled, setCodexTrayEnabled] = useState<boolean>(() => getSavedTrayEnabled('codex'));
+  const [trayEnabled, setTrayEnabled] = useState<TrayEnabledState>(getInitialTrayEnabledState);
   const [toast, setToast] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabName>(getSavedTab);
   const containerRef = useRef<HTMLDivElement>(null);
+  const claudeTrayEnabled = trayEnabled.claude;
+  const codexTrayEnabled = trayEnabled.codex;
 
   const setAndPersistTab = useCallback((tab: TabName) => {
     setActiveTab(tab);
@@ -247,6 +265,13 @@ export default function App() {
     syncTrayIcons();
   }, [syncTrayIcons]);
 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      syncTrayIcons();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [syncTrayIcons]);
+
   const handleThemeChange = useCallback((newTheme: ThemeName) => {
     setTheme(newTheme);
     try {
@@ -271,22 +296,34 @@ export default function App() {
     });
   }, []);
 
-  const handleTrayToggle = useCallback((service: TrayServiceName) => {
-    if (service === 'claude') {
-      setClaudeTrayEnabled((prev) => {
-        const next = !prev;
-        saveTrayEnabled('claude', next);
-        return next;
-      });
-      return;
-    }
-
-    setCodexTrayEnabled((prev) => {
-      const next = !prev;
-      saveTrayEnabled('codex', next);
-      return next;
-    });
+  const showTrayGuardToast = useCallback(() => {
+    setToast(TRAY_GUARD_MESSAGE);
+    setTimeout(() => setToast(null), TRAY_GUARD_TOAST_MS);
   }, []);
+
+  const handleTrayToggle = useCallback((service: TrayServiceName) => {
+    let blocked = false;
+
+    setTrayEnabled((prev) => {
+      const nextValue = !prev[service];
+      const otherService: TrayServiceName = service === 'claude' ? 'codex' : 'claude';
+
+      if (!nextValue && !prev[otherService]) {
+        blocked = true;
+        return prev;
+      }
+
+      saveTrayEnabled(service, nextValue);
+      return {
+        ...prev,
+        [service]: nextValue,
+      };
+    });
+
+    if (blocked) {
+      showTrayGuardToast();
+    }
+  }, [showTrayGuardToast]);
 
   const handleTabChange = useCallback((tab: TabName) => {
     setAndPersistTab(tab);
@@ -385,6 +422,8 @@ export default function App() {
           <TrayToggles
             claudeEnabled={claudeTrayEnabled}
             codexEnabled={codexTrayEnabled}
+            claudeCanDisable={codexTrayEnabled}
+            codexCanDisable={claudeTrayEnabled}
             claudeConnected={quota?.connected ?? false}
             codexConnected={codexConnected}
             onToggle={handleTrayToggle}

@@ -1,4 +1,4 @@
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 
 use super::tray_icon;
 use chrono::Local;
@@ -12,9 +12,50 @@ use tauri::{
 
 const ICON_SIZE: u32 = 44;
 const TRAY_SERVICE_ACTIVATED_EVENT: &str = "tray-service-activated";
+const TRAY_HIDDEN_TOOLTIP_SUFFIX: &str = "hidden";
 
 #[derive(Default)]
-pub struct TrayState;
+struct TrayRuntimeState {
+    claude_generation: u64,
+    codex_generation: u64,
+    claude_visible: bool,
+    codex_visible: bool,
+}
+
+impl TrayRuntimeState {
+    fn bump_generation(&mut self, service: TrayService) -> u64 {
+        let generation = match service {
+            TrayService::Claude => {
+                self.claude_generation = self.claude_generation.saturating_add(1);
+                self.claude_generation
+            }
+            TrayService::Codex => {
+                self.codex_generation = self.codex_generation.saturating_add(1);
+                self.codex_generation
+            }
+        };
+        generation
+    }
+
+    fn generation(&self, service: TrayService) -> u64 {
+        match service {
+            TrayService::Claude => self.claude_generation,
+            TrayService::Codex => self.codex_generation,
+        }
+    }
+
+    fn set_visible(&mut self, service: TrayService, visible: bool) {
+        match service {
+            TrayService::Claude => self.claude_visible = visible,
+            TrayService::Codex => self.codex_visible = visible,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct TrayState {
+    runtime: Arc<Mutex<TrayRuntimeState>>,
+}
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -224,24 +265,56 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 
 pub async fn update_tray_icon(
     app: AppHandle,
-    _tray_state: State<'_, TrayState>,
+    tray_state: State<'_, TrayState>,
     service: TrayService,
     percentage: Option<u8>,
     visible: bool,
 ) -> Result<(), String> {
+    let runtime = tray_state.runtime.clone();
+    let request_generation = {
+        let mut state = runtime
+            .lock()
+            .map_err(|_| "failed to lock tray runtime state".to_string())?;
+        let generation = state.bump_generation(service);
+        state.set_visible(service, visible);
+        generation
+    };
+
     let (tx, rx) = mpsc::channel();
     let app_handle = app.clone();
 
     app.run_on_main_thread(move || {
         let result = (|| -> Result<(), String> {
-            let Some(tray) = app_handle.tray_by_id(service.tray_id()) else {
-                return Ok(());
-            };
+            {
+                let state = runtime
+                    .lock()
+                    .map_err(|_| "failed to lock tray runtime state".to_string())?;
+                if state.generation(service) != request_generation {
+                    return Ok(());
+                }
+            }
 
             if !visible {
-                tray.set_visible(false).map_err(|e| e.to_string())?;
+                if let Some(tray) = app_handle.tray_by_id(service.tray_id()) {
+                    tray.set_icon(None).map_err(|e| e.to_string())?;
+                    tray.set_tooltip(Some(format!(
+                        "{}: {}",
+                        service.label(),
+                        TRAY_HIDDEN_TOOLTIP_SUFFIX
+                    )))
+                    .map_err(|e| e.to_string())?;
+                    tray.set_visible(true).map_err(|e| e.to_string())?;
+                }
                 return Ok(());
             }
+
+            if app_handle.tray_by_id(service.tray_id()).is_none() {
+                build_service_tray(&app_handle, service).map_err(|e| e.to_string())?;
+            }
+
+            let Some(tray) = app_handle.tray_by_id(service.tray_id()) else {
+                return Err(format!("missing tray icon for {}", service.label()));
+            };
 
             let icon = Image::from_bytes(&tray_icon::generate_tray_icon(
                 service.icon_identity(),
