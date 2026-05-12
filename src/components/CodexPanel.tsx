@@ -278,6 +278,13 @@ export default function CodexPanel({
             </div>
           )}
 
+          <CostSummarySection source="codex" refreshKey={manualRefreshNonce} />
+
+          {/* ChatGPT Link */}
+          <button className="open-dashboard-btn" onClick={handleOpenDashboard}>
+            Open Dashboard
+          </button>
+
           {/* Local Stats Section */}
           {codexStats && (codexStats.totalSessions > 0 || codexStats.todaySessions > 0) && (
             <div className="section">
@@ -294,13 +301,6 @@ export default function CodexPanel({
               </div>
             </div>
           )}
-
-          <CostSummarySection source="codex" refreshKey={manualRefreshNonce} />
-
-          {/* ChatGPT Link */}
-          <button className="open-dashboard-btn" onClick={handleOpenDashboard}>
-            Open Dashboard
-          </button>
         </div>
       )}
 
