@@ -1,8 +1,10 @@
 use tauri::{AppHandle, State};
 
 use crate::{
-    domain::models::{CodexData, CodexRateLimits, CodexStats, QuotaData},
-    services::{claude, codex, cost, link, tray, window},
+    domain::models::{
+        AntigravityData, CodexData, CodexRateLimits, CodexStats, CursorData, QuotaData,
+    },
+    services::{antigravity, claude, codex, cost, cursor, link, tray, window},
 };
 
 #[tauri::command]
@@ -26,6 +28,16 @@ pub async fn get_codex_rate_limits() -> Result<CodexRateLimits, String> {
 }
 
 #[tauri::command]
+pub async fn get_cursor_info() -> Result<CursorData, String> {
+    Ok(cursor::fetch_cursor_info().await)
+}
+
+#[tauri::command]
+pub async fn get_antigravity_info() -> Result<AntigravityData, String> {
+    Ok(antigravity::fetch_antigravity_info().await)
+}
+
+#[tauri::command]
 pub async fn get_cost_overview(
     source: String,
     currency: Option<String>,
@@ -43,6 +55,16 @@ pub fn open_claude_dashboard() -> Result<(), String> {
 #[tauri::command]
 pub fn open_codex_dashboard() -> Result<(), String> {
     link::open_codex_dashboard()
+}
+
+#[tauri::command]
+pub fn open_cursor_dashboard() -> Result<(), String> {
+    link::open_cursor_dashboard()
+}
+
+#[tauri::command]
+pub fn open_antigravity_dashboard() -> Result<(), String> {
+    link::open_antigravity_dashboard()
 }
 
 #[tauri::command]

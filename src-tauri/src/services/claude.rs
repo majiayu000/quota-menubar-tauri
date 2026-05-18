@@ -1,11 +1,12 @@
 use crate::domain::models::{QuotaData, UsageInfo};
+use crate::services::http::{is_transient_os_error, shared_http_client};
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
+#[cfg(target_os = "macos")]
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-#[cfg(target_os = "macos")]
-use std::process::Command;
 
 const TOKEN_CACHE_TTL: Duration = Duration::from_secs(300);
 const QUOTA_CACHE_TTL: Duration = Duration::from_secs(120);
@@ -116,11 +117,6 @@ static QUOTA_CACHE: OnceLock<Mutex<Option<CachedQuota>>> = OnceLock::new();
 
 fn quota_cache() -> &'static Mutex<Option<CachedQuota>> {
     QUOTA_CACHE.get_or_init(|| Mutex::new(None))
-}
-
-fn claude_http_client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
 }
 
 fn read_oauth_token_from_env() -> Option<String> {
@@ -266,7 +262,7 @@ async fn request_quota(access_token: &str) -> Result<reqwest::Response, String> 
     ));
 
     let start = Instant::now();
-    let response = claude_http_client()
+    let response = shared_http_client()
         .get("https://api.anthropic.com/api/oauth/usage")
         .header("Accept", "application/json")
         .header("Authorization", format!("Bearer {access_token}"))
@@ -359,6 +355,17 @@ fn is_rate_limited(status: reqwest::StatusCode) -> bool {
     status == reqwest::StatusCode::TOO_MANY_REQUESTS
 }
 
+/// On transient OS errors (EMFILE / EAGAIN), return the last successful
+/// QuotaData instead of surfacing the error to the UI.
+fn fallback_or_disconnected(error: String) -> QuotaData {
+    if is_transient_os_error(&error) {
+        if let Some(stale) = get_stale_cached_quota() {
+            return stale;
+        }
+    }
+    QuotaData::disconnected(error)
+}
+
 pub async fn fetch_quota() -> QuotaData {
     log_msg("[Quota] ---- fetch_quota start ----");
 
@@ -371,7 +378,7 @@ pub async fn fetch_quota() -> QuotaData {
         Ok(token) => token,
         Err(error) => {
             log_msg(&format!("[Quota] get_oauth_token failed: {error}"));
-            return QuotaData::disconnected(error);
+            return fallback_or_disconnected(error);
         }
     };
 
@@ -379,8 +386,7 @@ pub async fn fetch_quota() -> QuotaData {
         Ok(resp) => resp,
         Err(error) => {
             log_msg(&format!("[Quota] initial request failed: {error}"));
-            return get_stale_cached_quota()
-                .unwrap_or_else(|| QuotaData::disconnected(error));
+            return get_stale_cached_quota().unwrap_or_else(|| QuotaData::disconnected(error));
         }
     };
 
@@ -406,7 +412,7 @@ pub async fn fetch_quota() -> QuotaData {
             Ok(token) => token,
             Err(error) => {
                 log_msg(&format!("[Quota] keychain re-read failed: {error}"));
-                return QuotaData::disconnected(error);
+                return fallback_or_disconnected(error);
             }
         };
 
@@ -416,7 +422,7 @@ pub async fn fetch_quota() -> QuotaData {
                 log_msg(&format!(
                     "[Quota] retry with keychain token failed: {error}"
                 ));
-                return QuotaData::disconnected(error);
+                return fallback_or_disconnected(error);
             }
         };
 

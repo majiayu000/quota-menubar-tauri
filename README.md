@@ -4,15 +4,19 @@
   <img src="src-tauri/icons/app-icon.svg" alt="QuotaBar logo" width="128" />
 </p>
 
-QuotaBar is a Tauri v2 menubar app for monitoring Claude Code and Codex usage. It shows live quota windows, dual tray indicators, and local cost estimates from on-device logs.
+QuotaBar is a Tauri v2 menubar app for monitoring Claude Code, Codex, Cursor, and Antigravity usage. It shows live quota windows, per-provider tray indicators, and local cost estimates from on-device logs.
 
 ## Features
 
+- Provider switcher: full-name cards for Claude, Codex, Cursor, and Antigravity.
 - Claude quota: 5-hour, 7-day, Opus, Sonnet, and Claude Design windows.
-- Codex quota: short and weekly ChatGPT usage windows.
-- Local cost tracking: today, week, and month estimates for Claude Code and Codex.
-- Dual tray icons: independent Claude and Codex menu bar indicators.
+- Codex quota: short and weekly ChatGPT usage windows, with reset times shown as days plus hours when available.
+- Cursor quota: signed-in Cursor usage and request-limit windows when session data is available.
+- Antigravity panel: placeholder provider status while quota tracking is pending.
+- Local cost tracking: today, week, and month estimates for Claude Code, Codex, and Cursor.
+- Per-provider tray icons: independent menu bar indicators for supported providers.
 - Tray controls: enable or hide each tray while keeping at least one entry point.
+- Collapsible settings: theme and tray controls live at the bottom of the scrollable panel.
 - Background polling: refreshes every 60 seconds, backs off to 5 minutes on 429, and backs off to 1 hour on Claude auth failures.
 - Read-only Claude OAuth: reads Claude Code credentials from the correct source, but never refreshes or writes OAuth tokens.
 - Hidden-window polling: disables macOS webview throttling so menubar mode keeps working.
@@ -26,6 +30,10 @@ QuotaBar is a Tauri v2 menubar app for monitoring Claude Code and Codex usage. I
 - Codex tray value:
   - prefers `secondary_window.used_percent`
   - falls back to `primary_window.used_percent`
+- Cursor tray value:
+  - uses Cursor quota percentage when available
+- Antigravity tray value:
+  - shows provider availability while usage tracking is pending
 - Tray percentages represent used quota, not remaining quota.
 
 ## Project Layout
@@ -34,13 +42,19 @@ QuotaBar is a Tauri v2 menubar app for monitoring Claude Code and Codex usage. I
   - `src/App.tsx`
   - `src/components/*`
   - `src/services/backend.ts`
+  - `src/services/service_meta.ts`
+  - `src/services/tray_visibility.ts`
   - `src/types/models.ts`
+  - `src/utils/*`
 - Backend:
   - `src-tauri/src/commands.rs`
   - `src-tauri/src/domain/models.rs`
   - `src-tauri/src/services/claude.rs`
   - `src-tauri/src/services/codex.rs`
+  - `src-tauri/src/services/cursor.rs`
+  - `src-tauri/src/services/antigravity.rs`
   - `src-tauri/src/services/cost.rs`
+  - `src-tauri/src/services/http.rs`
   - `src-tauri/src/services/tray.rs`
   - `src-tauri/src/services/tray_icon.rs`
   - `src-tauri/src/services/window.rs`
@@ -53,6 +67,8 @@ QuotaBar is a Tauri v2 menubar app for monitoring Claude Code and Codex usage. I
 - Tauri prerequisites installed
 - Claude Code login for Claude quota and cost data
 - Codex login for Codex quota and cost data
+- Cursor sign-in or `CURSOR_SESSION_TOKEN` for Cursor quota data
+- Antigravity installed for Antigravity provider status
 
 ## Development
 
@@ -119,6 +135,11 @@ cd src-tauri && cargo test
 - No Codex quota data:
   - ensure `~/.codex/auth.json` is valid
   - run the `codex` login flow again if the token expired
+- No Cursor quota data:
+  - sign in to Cursor
+  - or set `CURSOR_SESSION_TOKEN`
+- Antigravity quota is pending:
+  - Antigravity support currently exposes provider status, not quota windows
 - Persistent 429 rate limiting:
   - QuotaBar uses a Claude Code user agent and serves stale cached data when available
   - polling backs off to 5 minutes after 429 responses

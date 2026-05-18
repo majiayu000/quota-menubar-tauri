@@ -1,41 +1,42 @@
 import type { TrayServiceName } from '../services/tray_visibility';
 
+export interface TrayToggleEntry {
+  service: TrayServiceName;
+  label: string;
+  enabled: boolean;
+  canDisable: boolean;
+  connected: boolean;
+  connectedHint?: string;
+  disconnectedHint: string;
+}
+
 interface TrayTogglesProps {
-  claudeEnabled: boolean;
-  codexEnabled: boolean;
-  claudeCanDisable: boolean;
-  codexCanDisable: boolean;
-  claudeConnected: boolean;
-  codexConnected: boolean;
+  entries: TrayToggleEntry[];
   onToggle: (service: TrayServiceName) => void;
 }
 
-function renderToggle(
-  service: TrayServiceName,
-  label: string,
-  enabled: boolean,
-  canDisable: boolean,
-  connected: boolean,
-  onToggle: (service: TrayServiceName) => void,
-) {
-  const disableToggle = enabled && !canDisable;
+function renderToggle(entry: TrayToggleEntry, onToggle: (service: TrayServiceName) => void) {
+  const disableToggle = entry.enabled && !entry.canDisable;
+  const statusText = entry.connected
+    ? entry.connectedHint ?? 'Connected'
+    : entry.disconnectedHint;
   return (
-    <div className="dock-toggle tray-toggle" key={service}>
+    <div className="dock-toggle tray-toggle" key={entry.service}>
       <span className="tray-toggle-copy">
-        <span className="toggle-label">{label}</span>
-        <span className={`tray-toggle-status ${connected ? 'connected' : 'disconnected'}`}>
-          {connected ? 'Connected' : 'Requires Codex App or CLI login'}
+        <span className="toggle-label">{entry.label}</span>
+        <span className={`tray-toggle-status ${entry.connected ? 'connected' : 'disconnected'}`}>
+          {statusText}
         </span>
       </span>
       <button
         type="button"
         role="switch"
-        className={`tray-toggle-button ${enabled ? 'checked' : ''} ${disableToggle ? 'disabled' : ''}`}
-        aria-checked={enabled}
+        className={`tray-toggle-button ${entry.enabled ? 'checked' : ''} ${disableToggle ? 'disabled' : ''}`}
+        aria-checked={entry.enabled}
         aria-disabled={disableToggle}
-        aria-label={`${label} toggle`}
+        aria-label={`${entry.label} toggle`}
         disabled={disableToggle}
-        onClick={() => onToggle(service)}
+        onClick={() => onToggle(entry.service)}
       >
         <span className="tray-toggle-thumb" />
       </button>
@@ -43,21 +44,12 @@ function renderToggle(
   );
 }
 
-export default function TrayToggles({
-  claudeEnabled,
-  codexEnabled,
-  claudeCanDisable,
-  codexCanDisable,
-  claudeConnected,
-  codexConnected,
-  onToggle,
-}: TrayTogglesProps) {
+export default function TrayToggles({ entries, onToggle }: TrayTogglesProps) {
   return (
     <div className="tray-settings">
       <div className="settings-title">Tray</div>
       <div className="tray-toggle-list">
-        {renderToggle('claude', 'Claude Tray', claudeEnabled, claudeCanDisable, claudeConnected, onToggle)}
-        {renderToggle('codex', 'Codex Tray', codexEnabled, codexCanDisable, codexConnected, onToggle)}
+        {entries.map((entry) => renderToggle(entry, onToggle))}
       </div>
     </div>
   );

@@ -97,7 +97,7 @@ export default function CostSummarySection({ source, refreshKey = 0 }: CostSumma
       <div className="section-title">
         LOCAL COST
         {overview && (
-          <span className="plan-tag">{overview.cached ? 'cached' : currency}</span>
+          <span className="plan-tag">{overview.cached ? 'Cached' : currency}</span>
         )}
       </div>
 

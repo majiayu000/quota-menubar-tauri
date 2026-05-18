@@ -1,13 +1,16 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import QuotaCard from './components/QuotaCard';
 import ActionButtons from './components/ActionButtons';
 import ThemeSelector, { ThemeName } from './components/ThemeSelector';
 import TabSwitcher, { TabName } from './components/TabSwitcher';
 import CodexPanel from './components/CodexPanel';
-import TrayToggles from './components/TrayToggles';
+import CursorPanel from './components/CursorPanel';
+import AntigravityPanel from './components/AntigravityPanel';
+import TrayToggles, { type TrayToggleEntry } from './components/TrayToggles';
 import CostSummarySection from './components/CostSummarySection';
 import { backend } from './services/backend';
+import { SERVICE_META, SERVICES } from './services/service_meta';
 import {
   getSavedTrayEnabled,
   saveTrayEnabled,
@@ -20,6 +23,7 @@ import './styles.css';
 const THEME_STORAGE_KEY = 'claude-quota-theme';
 const DOCK_HIDDEN_KEY = 'claude-quota-dock-hidden';
 const TAB_STORAGE_KEY = 'claude-quota-tab';
+const SETTINGS_EXPANDED_KEY = 'claude-quota-settings-expanded';
 export const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
 export const BACKOFF_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 export const AUTH_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
@@ -27,11 +31,35 @@ const TRAY_SERVICE_ACTIVATED_EVENT = 'tray-service-activated';
 const TRAY_GUARD_TOAST_MS = 2000;
 const TRAY_GUARD_MESSAGE = 'At least one tray must remain enabled';
 
+const VALID_TABS = new Set<string>(SERVICES);
+
+const THEME_LABELS: Record<ThemeName, string> = {
+  light: 'Light',
+  dark: 'Dark',
+  claude: 'Claude',
+  'claude-dark': 'Claude Dark',
+  minimal: 'Minimal',
+  'minimal-dark': 'Minimal Dark',
+  ocean: 'Ocean',
+};
+
 interface TrayServiceActivatedPayload {
   service: TrayServiceName;
 }
 
-type TrayEnabledState = Record<TrayServiceName, boolean>;
+type ServiceMap<T> = Record<TrayServiceName, T>;
+type TrayEnabledState = ServiceMap<boolean>;
+type TrayIconRequest = {
+  percentage: number | null;
+  visible: boolean;
+};
+
+function defaultServiceMap<T>(value: T): ServiceMap<T> {
+  return SERVICES.reduce((acc, svc) => {
+    acc[svc] = value;
+    return acc;
+  }, {} as ServiceMap<T>);
+}
 
 function isMacOSPlatform(): boolean {
   if (typeof navigator === 'undefined') return false;
@@ -43,8 +71,8 @@ function isMacOSPlatform(): boolean {
 function getSavedTab(): TabName {
   try {
     const saved = localStorage.getItem(TAB_STORAGE_KEY);
-    if (saved === 'claude' || saved === 'codex') {
-      return saved;
+    if (saved && VALID_TABS.has(saved)) {
+      return saved as TabName;
     }
   } catch {}
   return 'claude';
@@ -67,17 +95,23 @@ function getSavedDockHidden(): boolean {
   return false;
 }
 
+function getSavedSettingsExpanded(): boolean {
+  try {
+    return localStorage.getItem(SETTINGS_EXPANDED_KEY) === 'true';
+  } catch {}
+  return false;
+}
+
 function getInitialTrayEnabledState(): TrayEnabledState {
-  const claude = getSavedTrayEnabled('claude');
-  const codex = getSavedTrayEnabled('codex');
-
-  if (!claude && !codex) {
-    saveTrayEnabled('claude', true);
-    saveTrayEnabled('codex', false);
-    return { claude: true, codex: false };
+  const state = defaultServiceMap(false);
+  for (const svc of SERVICES) {
+    state[svc] = getSavedTrayEnabled(svc);
   }
-
-  return { claude, codex };
+  if (!SERVICES.some((svc) => state[svc])) {
+    saveTrayEnabled('claude', true);
+    state.claude = true;
+  }
+  return state;
 }
 
 function formatResetTime(resetTime?: string): string {
@@ -159,18 +193,22 @@ export function getClaudeRefreshIntervalMs(error?: string | null): number {
 export default function App() {
   const isMacOS = isMacOSPlatform();
 
-  // Claude state
+  // Claude state (still owned by App because of adaptive backoff)
   const [quota, setQuota] = useState<QuotaData | null>(null);
   const [claudeLoading, setClaudeLoading] = useState(false);
   const [claudeError, setClaudeError] = useState<string | null>(null);
   const [claudeCostRefreshNonce, setClaudeCostRefreshNonce] = useState(0);
   const claudeIntervalRef = useRef(AUTO_REFRESH_INTERVAL_MS);
 
-  // Codex state
-  const [codexConnected, setCodexConnected] = useState(false);
-  const [codexUsedPercent, setCodexUsedPercent] = useState<number | null>(null);
-  const [codexLoading, setCodexLoading] = useState(false);
-  const [codexManualRefreshNonce, setCodexManualRefreshNonce] = useState(0);
+  // Per-service connection + usage state (set via Panel callbacks)
+  const [connected, setConnected] = useState<ServiceMap<boolean>>(() => defaultServiceMap(false));
+  const [usedPercent, setUsedPercent] = useState<ServiceMap<number | null>>(() =>
+    defaultServiceMap<number | null>(null),
+  );
+  const [panelLoading, setPanelLoading] = useState<ServiceMap<boolean>>(() => defaultServiceMap(false));
+
+  // Manual refresh nonces (per non-Claude service)
+  const [refreshNonces, setRefreshNonces] = useState<ServiceMap<number>>(() => defaultServiceMap(0));
 
   // UI state
   const [theme, setTheme] = useState<ThemeName>(getSavedTheme);
@@ -179,8 +217,43 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabName>(getSavedTab);
   const containerRef = useRef<HTMLDivElement>(null);
-  const claudeTrayEnabled = trayEnabled.claude;
-  const codexTrayEnabled = trayEnabled.codex;
+  const lastTrayIconRequestRef = useRef<Partial<Record<TrayServiceName, TrayIconRequest>>>({});
+
+  const setServiceConnected = useCallback((service: TrayServiceName, value: boolean) => {
+    setConnected((prev) => (prev[service] === value ? prev : { ...prev, [service]: value }));
+  }, []);
+
+  const setServiceUsedPercent = useCallback((service: TrayServiceName, value: number | null) => {
+    setUsedPercent((prev) => (prev[service] === value ? prev : { ...prev, [service]: value }));
+  }, []);
+
+  const setServiceLoading = useCallback((service: TrayServiceName, value: boolean) => {
+    setPanelLoading((prev) => (prev[service] === value ? prev : { ...prev, [service]: value }));
+  }, []);
+
+  const connectionSetters = useMemo<ServiceMap<(value: boolean) => void>>(() => {
+    const setters = {} as ServiceMap<(value: boolean) => void>;
+    for (const svc of SERVICES) {
+      setters[svc] = (value) => setServiceConnected(svc, value);
+    }
+    return setters;
+  }, [setServiceConnected]);
+
+  const usageSetters = useMemo<ServiceMap<(value: number | null) => void>>(() => {
+    const setters = {} as ServiceMap<(value: number | null) => void>;
+    for (const svc of SERVICES) {
+      setters[svc] = (value) => setServiceUsedPercent(svc, value);
+    }
+    return setters;
+  }, [setServiceUsedPercent]);
+
+  const loadingSetters = useMemo<ServiceMap<(value: boolean) => void>>(() => {
+    const setters = {} as ServiceMap<(value: boolean) => void>;
+    for (const svc of SERVICES) {
+      setters[svc] = (value) => setServiceLoading(svc, value);
+    }
+    return setters;
+  }, [setServiceLoading]);
 
   const setAndPersistTab = useCallback((tab: TabName) => {
     setActiveTab(tab);
@@ -218,15 +291,21 @@ export default function App() {
       clearTimeout(timer2);
       observer.disconnect();
     };
-  }, [activeTab, quota, codexConnected]);
+  }, [activeTab, quota, connected]);
 
   const updateTrayIcon = useCallback(async (
     service: TrayServiceName,
     percentage: number | null,
     visible: boolean,
   ) => {
+    const previous = lastTrayIconRequestRef.current[service];
+    if (previous?.percentage === percentage && previous.visible === visible) {
+      return;
+    }
+
     try {
       await backend.updateTrayIcon(service, percentage, visible);
+      lastTrayIconRequestRef.current[service] = { percentage, visible };
     } catch (err) {
       console.error(`Failed to update ${service} tray icon:`, err);
     }
@@ -241,7 +320,6 @@ export default function App() {
 
       if (data.error) {
         setClaudeError(data.error);
-        // On 429, keep showing stale quota data if we have it
         if (!data.error.includes('429')) {
           setQuota(null);
         }
@@ -249,19 +327,19 @@ export default function App() {
       } else {
         setQuota(data);
         setClaudeError(null);
-        // Reset to normal interval on success
         claudeIntervalRef.current = AUTO_REFRESH_INTERVAL_MS;
       }
+      setServiceConnected('claude', data.connected);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       setClaudeError(message);
       claudeIntervalRef.current = getClaudeRefreshIntervalMs(message);
+      setServiceConnected('claude', false);
     } finally {
       setClaudeLoading(false);
     }
-  }, []);
+  }, [setServiceConnected]);
 
-  // Auto-refresh Claude data in background with adaptive interval.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
@@ -282,25 +360,17 @@ export default function App() {
     };
   }, [fetchClaudeQuota]);
 
+  useEffect(() => {
+    setServiceUsedPercent('claude', getClaudeTrayUsedPercent(quota));
+  }, [quota, setServiceUsedPercent]);
+
   const syncTrayIcons = useCallback(() => {
-    updateTrayIcon(
-      'claude',
-      getClaudeTrayUsedPercent(quota),
-      shouldShowTray(claudeTrayEnabled, quota?.connected ?? false),
-    );
-    updateTrayIcon(
-      'codex',
-      codexUsedPercent,
-      shouldShowTray(codexTrayEnabled, codexConnected),
-    );
-  }, [
-    quota,
-    claudeTrayEnabled,
-    codexUsedPercent,
-    codexConnected,
-    codexTrayEnabled,
-    updateTrayIcon,
-  ]);
+    for (const svc of SERVICES) {
+      const pct = svc === 'claude' ? getClaudeTrayUsedPercent(quota) : usedPercent[svc];
+      const isConnected = svc === 'claude' ? quota?.connected ?? false : connected[svc];
+      updateTrayIcon(svc, pct, shouldShowTray(trayEnabled[svc], isConnected));
+    }
+  }, [quota, connected, usedPercent, trayEnabled, updateTrayIcon]);
 
   useEffect(() => {
     syncTrayIcons();
@@ -320,7 +390,6 @@ export default function App() {
     } catch {}
   }, []);
 
-  // Apply dock visibility from current toggle state on startup and on changes.
   useEffect(() => {
     backend.setDockVisibility(!dockHidden).catch((err) => {
       console.error('Failed to apply dock visibility:', err);
@@ -347,9 +416,9 @@ export default function App() {
 
     setTrayEnabled((prev) => {
       const nextValue = !prev[service];
-      const otherService: TrayServiceName = service === 'claude' ? 'codex' : 'claude';
+      const someOtherEnabled = SERVICES.some((other) => other !== service && prev[other]);
 
-      if (!nextValue && !prev[otherService]) {
+      if (!nextValue && !someOtherEnabled) {
         blocked = true;
         return prev;
       }
@@ -376,7 +445,7 @@ export default function App() {
 
     listen<TrayServiceActivatedPayload>(TRAY_SERVICE_ACTIVATED_EVENT, (event) => {
       const service = event.payload?.service;
-      if (service === 'claude' || service === 'codex') {
+      if (service && VALID_TABS.has(service)) {
         setAndPersistTab(service);
       }
     })
@@ -405,15 +474,24 @@ export default function App() {
       setClaudeCostRefreshNonce((value) => value + 1);
       return;
     }
-    setCodexManualRefreshNonce((value) => value + 1);
+    setRefreshNonces((prev) => ({ ...prev, [activeTab]: prev[activeTab] + 1 }));
   }, [activeTab, fetchClaudeQuota]);
 
   const handleOpenDashboard = useCallback(async () => {
     try {
-      if (activeTab === 'claude') {
-        await backend.openClaudeDashboard();
-      } else {
-        await backend.openCodexDashboard();
+      switch (activeTab) {
+        case 'claude':
+          await backend.openClaudeDashboard();
+          break;
+        case 'codex':
+          await backend.openCodexDashboard();
+          break;
+        case 'cursor':
+          await backend.openCursorDashboard();
+          break;
+        case 'antigravity':
+          await backend.openAntigravityDashboard();
+          break;
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to open dashboard';
@@ -430,147 +508,229 @@ export default function App() {
     }
   };
 
-  // Callback from CodexPanel to update usage percentage for tray icon
-  const handleCodexUsageChange = useCallback((usedPercent: number | null) => {
-    setCodexUsedPercent(usedPercent);
-  }, []);
+  const trayEntries: TrayToggleEntry[] = SERVICES.map((svc) => {
+    const meta = SERVICE_META[svc];
+    const otherEnabled = SERVICES.some((other) => other !== svc && trayEnabled[other]);
+    const isConnected = svc === 'claude' ? quota?.connected ?? false : connected[svc];
+    return {
+      service: svc,
+      label: meta.trayLabel,
+      enabled: trayEnabled[svc],
+      canDisable: otherEnabled,
+      connected: isConnected,
+      connectedHint: meta.connectedHint,
+      disconnectedHint: meta.disconnectedHint,
+    };
+  });
 
+  const tabConnected: Record<TabName, boolean> = {
+    claude: quota?.connected ?? false,
+    codex: connected.codex,
+    cursor: connected.cursor,
+    antigravity: connected.antigravity,
+  };
+
+  const activeLoading =
+    activeTab === 'claude' ? claudeLoading : panelLoading[activeTab];
+
+  const serviceUsage: ServiceMap<number | null> = {
+    ...usedPercent,
+    claude: getClaudeTrayUsedPercent(quota),
+  };
+  const serviceLoading: ServiceMap<boolean> = {
+    ...panelLoading,
+    claude: claudeLoading,
+  };
+  const enabledTrayCount = SERVICES.filter((svc) => trayEnabled[svc]).length;
+  const connectedTrayCount = trayEntries.filter((entry) => entry.connected).length;
+  const settingsSummary = `${THEME_LABELS[theme]} / ${enabledTrayCount} tray on / ${connectedTrayCount} connected`;
   return (
     <div className={`app theme-${theme}`}>
       {toast && <div className="toast">{toast}</div>}
       <div className="container" ref={containerRef}>
-        <TabSwitcher
-          activeTab={activeTab}
-          onTabChange={handleTabChange}
-          claudeConnected={quota?.connected ?? false}
-          codexConnected={codexConnected}
-        />
+        <div className="panel-scroll">
+          {activeTab === 'claude' && (
+            <>
+              {claudeLoading && !quota && (
+                <div className="loading-state">Loading Claude quota...</div>
+              )}
 
-        <div className="settings-row">
-          <div className="settings-meta">
-            <span className="settings-title">Appearance</span>
-            {isMacOS && (
-              <label className="dock-toggle">
-                <span className="toggle-label">Hide Dock</span>
-                <input
-                  type="checkbox"
-                  checked={dockHidden}
-                  onChange={handleDockToggle}
-                />
-              </label>
-            )}
+              {claudeError && (
+                <div className="error-banner">
+                  <span className="error-icon">!</span>
+                  <span className="error-text">{claudeError}</span>
+                </div>
+              )}
+
+              {!claudeError && quota && (
+                <div className="quota-list">
+                  <div className="section">
+                    <div className="section-title">
+                      CURRENT SESSION
+                      <span className="plan-tag">Claude Code</span>
+                    </div>
+                    {quota.session ? (
+                      <QuotaCard
+                        label="5-Hour Usage"
+                        percentage={Math.round(quota.session.percentage)}
+                        resetsIn={formatResetTime(quota.session.resetTime)}
+                      />
+                    ) : (
+                      <div className="no-data">No session data</div>
+                    )}
+                  </div>
+
+                  <div className="section">
+                    <div className="section-title">
+                      WEEKLY LIMITS
+                      <span className="plan-tag">Claude Code</span>
+                    </div>
+
+                    {quota.weeklyTotal && (
+                      <QuotaCard
+                        label="7-Day Usage"
+                        percentage={Math.round(quota.weeklyTotal.percentage)}
+                        resetsIn={formatResetTime(quota.weeklyTotal.resetTime)}
+                      />
+                    )}
+
+                    {quota.weeklyOpus && (
+                      <QuotaCard
+                        label="Opus (7-Day)"
+                        percentage={Math.round(quota.weeklyOpus.percentage)}
+                        resetsIn={formatResetTime(quota.weeklyOpus.resetTime)}
+                      />
+                    )}
+
+                    {quota.weeklySonnet && (
+                      <QuotaCard
+                        label="Sonnet (7-Day)"
+                        percentage={Math.round(quota.weeklySonnet.percentage)}
+                        resetsIn={formatResetTime(quota.weeklySonnet.resetTime)}
+                      />
+                    )}
+
+                    {quota.weeklyDesign && (
+                      <QuotaCard
+                        label="Claude Design (7-Day)"
+                        percentage={Math.round(quota.weeklyDesign.percentage)}
+                        resetsIn={formatResetTime(quota.weeklyDesign.resetTime)}
+                      />
+                    )}
+
+                    {!quota.weeklyTotal && !quota.weeklyOpus && !quota.weeklySonnet && !quota.weeklyDesign && (
+                      <div className="no-data">No weekly data</div>
+                    )}
+                  </div>
+
+                  <CostSummarySection source="claude" refreshKey={claudeCostRefreshNonce} />
+                </div>
+              )}
+
+              {!claudeError && !quota && !claudeLoading && (
+                <div className="empty-state">
+                  <p>Unable to load quota data</p>
+                  <button onClick={handleRefresh} className="retry-btn">
+                    Try Again
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+
+          <div style={{ display: activeTab === 'codex' ? 'block' : 'none' }}>
+            <CodexPanel
+              onConnectionChange={connectionSetters.codex}
+              onUsageChange={usageSetters.codex}
+              onLoadingChange={loadingSetters.codex}
+              manualRefreshNonce={refreshNonces.codex}
+              autoRefreshIntervalMs={AUTO_REFRESH_INTERVAL_MS}
+            />
           </div>
-          <ThemeSelector currentTheme={theme} onThemeChange={handleThemeChange} />
-          <TrayToggles
-            claudeEnabled={claudeTrayEnabled}
-            codexEnabled={codexTrayEnabled}
-            claudeCanDisable={codexTrayEnabled}
-            codexCanDisable={claudeTrayEnabled}
-            claudeConnected={quota?.connected ?? false}
-            codexConnected={codexConnected}
-            onToggle={handleTrayToggle}
-          />
-        </div>
 
-        {activeTab === 'claude' && (
-          <>
-            {claudeLoading && !quota && (
-              <div className="loading-state">Loading Claude quota...</div>
-            )}
+          <div style={{ display: activeTab === 'cursor' ? 'block' : 'none' }}>
+            <CursorPanel
+              onConnectionChange={connectionSetters.cursor}
+              onUsageChange={usageSetters.cursor}
+              onLoadingChange={loadingSetters.cursor}
+              manualRefreshNonce={refreshNonces.cursor}
+              autoRefreshIntervalMs={AUTO_REFRESH_INTERVAL_MS}
+            />
+          </div>
 
-            {claudeError && (
-              <div className="error-banner">
-                <span className="error-icon">!</span>
-                <span className="error-text">{claudeError}</span>
-              </div>
-            )}
+          <div style={{ display: activeTab === 'antigravity' ? 'block' : 'none' }}>
+            <AntigravityPanel
+              onConnectionChange={connectionSetters.antigravity}
+              onLoadingChange={loadingSetters.antigravity}
+              manualRefreshNonce={refreshNonces.antigravity}
+            />
+          </div>
+          <div className="bottom-controls">
+            <div className="command-bar">
+              <TabSwitcher
+                activeTab={activeTab}
+                onTabChange={handleTabChange}
+                connected={tabConnected}
+                loading={serviceLoading}
+                usedPercent={serviceUsage}
+              />
+            </div>
 
-            {!claudeError && quota && (
-              <div className="quota-list">
-                <div className="section">
-                  <div className="section-title">CURRENT SESSION</div>
-                  {quota.session ? (
-                    <QuotaCard
-                      label="5-Hour Usage"
-                      percentage={Math.round(quota.session.percentage)}
-                      resetsIn={formatResetTime(quota.session.resetTime)}
-                    />
-                  ) : (
-                    <div className="no-data">No session data</div>
-                  )}
+            <div className="settings-row" aria-label="Settings">
+              <input
+                id="settings-fold-toggle"
+                className="settings-fold-input"
+                type="checkbox"
+                defaultChecked={getSavedSettingsExpanded()}
+                onChange={(event) => {
+                  try {
+                    localStorage.setItem(SETTINGS_EXPANDED_KEY, String(event.currentTarget.checked));
+                  } catch {}
+                }}
+              />
+              <label
+                htmlFor="settings-fold-toggle"
+                className="settings-fold-header"
+              >
+                <span className="settings-fold-copy">
+                  <span className="settings-title">Settings</span>
+                  <span className="settings-summary">{settingsSummary}</span>
+                </span>
+                <span className="settings-chevron" aria-hidden="true" />
+              </label>
+
+              <div
+                id="settings-fold-body"
+                className="settings-fold-body"
+              >
+                <div className="settings-fold-content">
+                  <div className="settings-meta">
+                    <span className="settings-title">Appearance</span>
+                    {isMacOS && (
+                      <label className="dock-toggle">
+                        <span className="toggle-label">Hide Dock</span>
+                        <input
+                          type="checkbox"
+                          checked={dockHidden}
+                          onChange={handleDockToggle}
+                        />
+                      </label>
+                    )}
+                  </div>
+                  <ThemeSelector currentTheme={theme} onThemeChange={handleThemeChange} />
+                  <TrayToggles entries={trayEntries} onToggle={handleTrayToggle} />
                 </div>
-
-                <div className="section">
-                  <div className="section-title">WEEKLY LIMITS</div>
-
-                  {quota.weeklyTotal && (
-                    <QuotaCard
-                      label="7-Day Usage"
-                      percentage={Math.round(quota.weeklyTotal.percentage)}
-                      resetsIn={formatResetTime(quota.weeklyTotal.resetTime)}
-                    />
-                  )}
-
-                  {quota.weeklyOpus && (
-                    <QuotaCard
-                      label="Opus (7-Day)"
-                      percentage={Math.round(quota.weeklyOpus.percentage)}
-                      resetsIn={formatResetTime(quota.weeklyOpus.resetTime)}
-                    />
-                  )}
-
-                  {quota.weeklySonnet && (
-                    <QuotaCard
-                      label="Sonnet (7-Day)"
-                      percentage={Math.round(quota.weeklySonnet.percentage)}
-                      resetsIn={formatResetTime(quota.weeklySonnet.resetTime)}
-                    />
-                  )}
-
-                  {quota.weeklyDesign && (
-                    <QuotaCard
-                      label="Claude Design (7-Day)"
-                      percentage={Math.round(quota.weeklyDesign.percentage)}
-                      resetsIn={formatResetTime(quota.weeklyDesign.resetTime)}
-                    />
-                  )}
-
-                  {!quota.weeklyTotal && !quota.weeklyOpus && !quota.weeklySonnet && !quota.weeklyDesign && (
-                    <div className="no-data">No weekly data</div>
-                  )}
-                </div>
-
-                <CostSummarySection source="claude" refreshKey={claudeCostRefreshNonce} />
               </div>
-            )}
+            </div>
 
-            {!claudeError && !quota && !claudeLoading && (
-              <div className="empty-state">
-                <p>Unable to load quota data</p>
-                <button onClick={handleRefresh} className="retry-btn">
-                  Try Again
-                </button>
-              </div>
-            )}
-          </>
-        )}
-
-        <div style={{ display: activeTab === 'codex' ? 'block' : 'none' }}>
-          <CodexPanel
-            onConnectionChange={setCodexConnected}
-            onUsageChange={handleCodexUsageChange}
-            onLoadingChange={setCodexLoading}
-            manualRefreshNonce={codexManualRefreshNonce}
-            autoRefreshIntervalMs={AUTO_REFRESH_INTERVAL_MS}
-          />
+            <ActionButtons
+              onRefresh={handleRefresh}
+              onDashboard={handleOpenDashboard}
+              onQuit={handleQuit}
+              loading={activeLoading}
+            />
+          </div>
         </div>
-
-        <ActionButtons
-          onRefresh={handleRefresh}
-          onDashboard={handleOpenDashboard}
-          onQuit={handleQuit}
-          loading={activeTab === 'claude' ? claudeLoading : codexLoading}
-        />
       </div>
     </div>
   );

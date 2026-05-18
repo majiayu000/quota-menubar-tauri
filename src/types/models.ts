@@ -51,7 +51,25 @@ export interface CodexRateLimits {
   error?: string;
 }
 
-export type CostSource = 'claude' | 'codex';
+export interface CursorData {
+  connected: boolean;
+  planType?: string;
+  email?: string;
+  fastUsed?: number;
+  fastLimit?: number;
+  percentage?: number;
+  slowUsed?: number;
+  resetAt?: string;
+  error?: string;
+}
+
+export interface AntigravityData {
+  connected: boolean;
+  status: string;
+  error?: string;
+}
+
+export type CostSource = 'claude' | 'codex' | 'cursor';
 
 export interface CostTokenBreakdown {
   inputTokens: number;

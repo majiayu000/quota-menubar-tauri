@@ -143,3 +143,54 @@ impl CodexRateLimits {
         }
     }
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CursorData {
+    pub connected: bool,
+    #[serde(rename = "planType")]
+    pub plan_type: Option<String>,
+    pub email: Option<String>,
+    #[serde(rename = "fastUsed")]
+    pub fast_used: Option<i64>,
+    #[serde(rename = "fastLimit")]
+    pub fast_limit: Option<i64>,
+    pub percentage: Option<f64>,
+    #[serde(rename = "slowUsed")]
+    pub slow_used: Option<i64>,
+    #[serde(rename = "resetAt")]
+    pub reset_at: Option<String>,
+    pub error: Option<String>,
+}
+
+impl CursorData {
+    pub fn disconnected(error: impl Into<String>) -> Self {
+        Self {
+            connected: false,
+            plan_type: None,
+            email: None,
+            fast_used: None,
+            fast_limit: None,
+            percentage: None,
+            slow_used: None,
+            reset_at: None,
+            error: Some(error.into()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AntigravityData {
+    pub connected: bool,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+impl AntigravityData {
+    pub fn placeholder() -> Self {
+        Self {
+            connected: false,
+            status: "preview".to_string(),
+            error: Some("Quota tracking arrives when Google ships a stable usage API.".to_string()),
+        }
+    }
+}

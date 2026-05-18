@@ -1,6 +1,7 @@
 use crate::domain::models::{
     CodexCredits, CodexData, CodexRateLimitWindow, CodexRateLimits, CodexStats,
 };
+use crate::services::http::{is_transient_os_error, shared_http_client};
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 use chrono::{DateTime, NaiveDate, Utc};
 use std::fs;
@@ -26,6 +27,19 @@ fn history_stats_cache() -> &'static Mutex<Option<HistoryStatsCache>> {
     HISTORY_STATS_CACHE.get_or_init(|| Mutex::new(None))
 }
 
+/// Most recent successful fetch results, retained without TTL so we can
+/// short-circuit transient OS errors (EMFILE etc.) without flashing UI.
+static LAST_GOOD_INFO: OnceLock<Mutex<Option<CodexData>>> = OnceLock::new();
+static LAST_GOOD_LIMITS: OnceLock<Mutex<Option<CodexRateLimits>>> = OnceLock::new();
+
+fn last_good_info() -> &'static Mutex<Option<CodexData>> {
+    LAST_GOOD_INFO.get_or_init(|| Mutex::new(None))
+}
+
+fn last_good_limits() -> &'static Mutex<Option<CodexRateLimits>> {
+    LAST_GOOD_LIMITS.get_or_init(|| Mutex::new(None))
+}
+
 fn get_codex_home() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".codex"))
 }
@@ -47,7 +61,11 @@ fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
     STANDARD_NO_PAD
         .decode(&standard)
         .ok()
-        .or_else(|| base64::engine::general_purpose::STANDARD.decode(&standard).ok())
+        .or_else(|| {
+            base64::engine::general_purpose::STANDARD
+                .decode(&standard)
+                .ok()
+        })
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .and_then(|json| serde_json::from_str(&json).ok())
 }
@@ -59,8 +77,8 @@ fn read_auth_json() -> Result<serde_json::Value, String> {
         return Err("Codex not configured. Please run 'codex' to login.".to_string());
     }
 
-    let content = fs::read_to_string(&auth_file)
-        .map_err(|e| format!("Failed to read auth.json: {e}"))?;
+    let content =
+        fs::read_to_string(&auth_file).map_err(|e| format!("Failed to read auth.json: {e}"))?;
     serde_json::from_str(&content).map_err(|e| format!("Failed to parse auth.json: {e}"))
 }
 
@@ -79,7 +97,9 @@ fn parse_rate_limit_window(window: &serde_json::Value) -> Option<CodexRateLimitW
 
     Some(CodexRateLimitWindow {
         used_percent: parse_used_percent(window),
-        window_minutes: window["limit_window_seconds"].as_i64().map(|s| (s + 59) / 60),
+        window_minutes: window["limit_window_seconds"]
+            .as_i64()
+            .map(|s| (s + 59) / 60),
         resets_at: window["reset_at"].as_i64(),
     })
 }
@@ -121,10 +141,21 @@ fn build_codex_stats(total_sessions: u32, today_sessions: u32, last_ts: Option<i
     }
 }
 
+fn fallback_or_disconnected_info(error: String) -> CodexData {
+    if is_transient_os_error(&error) {
+        if let Ok(guard) = last_good_info().lock() {
+            if let Some(stale) = guard.as_ref() {
+                return stale.clone();
+            }
+        }
+    }
+    CodexData::disconnected(error)
+}
+
 pub async fn fetch_codex_info() -> CodexData {
     let auth_json = match read_auth_json() {
         Ok(v) => v,
-        Err(error) => return CodexData::disconnected(error),
+        Err(error) => return fallback_or_disconnected_info(error),
     };
 
     let id_token = match auth_json["tokens"]["id_token"].as_str() {
@@ -139,16 +170,25 @@ pub async fn fetch_codex_info() -> CodexData {
 
     let auth_info = &payload["https://api.openai.com/auth"];
 
-    CodexData {
+    let info = CodexData {
         connected: true,
-        plan_type: auth_info["chatgpt_plan_type"].as_str().map(ToString::to_string),
-        account_id: auth_info["chatgpt_account_id"].as_str().map(ToString::to_string),
+        plan_type: auth_info["chatgpt_plan_type"]
+            .as_str()
+            .map(ToString::to_string),
+        account_id: auth_info["chatgpt_account_id"]
+            .as_str()
+            .map(ToString::to_string),
         subscription_until: auth_info["chatgpt_subscription_active_until"]
             .as_str()
             .map(ToString::to_string),
         email: payload["email"].as_str().map(ToString::to_string),
         error: None,
+    };
+
+    if let Ok(mut guard) = last_good_info().lock() {
+        *guard = Some(info.clone());
     }
+    info
 }
 
 pub async fn fetch_codex_stats() -> CodexStats {
@@ -254,15 +294,21 @@ pub async fn fetch_codex_stats() -> CodexStats {
     build_codex_stats(total_sessions, today_sessions, last_ts)
 }
 
-fn codex_http_client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
+fn fallback_or_disconnected_limits(error: String) -> CodexRateLimits {
+    if is_transient_os_error(&error) {
+        if let Ok(guard) = last_good_limits().lock() {
+            if let Some(stale) = guard.as_ref() {
+                return stale.clone();
+            }
+        }
+    }
+    CodexRateLimits::disconnected(error)
 }
 
 pub async fn fetch_codex_rate_limits() -> CodexRateLimits {
     let auth_json = match read_auth_json() {
         Ok(v) => v,
-        Err(error) => return CodexRateLimits::disconnected(error),
+        Err(error) => return fallback_or_disconnected_limits(error),
     };
 
     let access_token = match auth_json["tokens"]["access_token"].as_str() {
@@ -279,7 +325,7 @@ pub async fn fetch_codex_rate_limits() -> CodexRateLimits {
                 .map(ToString::to_string)
         });
 
-    let client = codex_http_client();
+    let client = shared_http_client();
     let mut request = client
         .get("https://chatgpt.com/backend-api/wham/usage")
         .header("Authorization", format!("Bearer {access_token}"))
@@ -305,7 +351,9 @@ pub async fn fetch_codex_rate_limits() -> CodexRateLimits {
 
     let data = match response.json::<serde_json::Value>().await {
         Ok(data) => data,
-        Err(err) => return CodexRateLimits::disconnected(format!("Failed to parse response: {err}")),
+        Err(err) => {
+            return CodexRateLimits::disconnected(format!("Failed to parse response: {err}"))
+        }
     };
 
     let primary = data["rate_limit"]
@@ -331,12 +379,17 @@ pub async fn fetch_codex_rate_limits() -> CodexRateLimits {
             .map(ToString::to_string),
     });
 
-    CodexRateLimits {
+    let limits = CodexRateLimits {
         connected: true,
         plan_type: data["plan_type"].as_str().map(ToString::to_string),
         primary,
         secondary,
         credits,
         error: None,
+    };
+
+    if let Ok(mut guard) = last_good_limits().lock() {
+        *guard = Some(limits.clone());
     }
+    limits
 }

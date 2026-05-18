@@ -14,12 +14,22 @@ const ICON_SIZE: u32 = 44;
 const TRAY_SERVICE_ACTIVATED_EVENT: &str = "tray-service-activated";
 const TRAY_HIDDEN_TOOLTIP_SUFFIX: &str = "hidden";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TraySnapshot {
+    percentage: Option<u8>,
+    visible: bool,
+}
+
 #[derive(Default)]
 struct TrayRuntimeState {
     claude_generation: u64,
     codex_generation: u64,
-    claude_visible: bool,
-    codex_visible: bool,
+    cursor_generation: u64,
+    antigravity_generation: u64,
+    claude_snapshot: Option<TraySnapshot>,
+    codex_snapshot: Option<TraySnapshot>,
+    cursor_snapshot: Option<TraySnapshot>,
+    antigravity_snapshot: Option<TraySnapshot>,
 }
 
 impl TrayRuntimeState {
@@ -33,6 +43,14 @@ impl TrayRuntimeState {
                 self.codex_generation = self.codex_generation.saturating_add(1);
                 self.codex_generation
             }
+            TrayService::Cursor => {
+                self.cursor_generation = self.cursor_generation.saturating_add(1);
+                self.cursor_generation
+            }
+            TrayService::Antigravity => {
+                self.antigravity_generation = self.antigravity_generation.saturating_add(1);
+                self.antigravity_generation
+            }
         };
         generation
     }
@@ -41,13 +59,26 @@ impl TrayRuntimeState {
         match service {
             TrayService::Claude => self.claude_generation,
             TrayService::Codex => self.codex_generation,
+            TrayService::Cursor => self.cursor_generation,
+            TrayService::Antigravity => self.antigravity_generation,
         }
     }
 
-    fn set_visible(&mut self, service: TrayService, visible: bool) {
+    fn snapshot(&self, service: TrayService) -> Option<TraySnapshot> {
         match service {
-            TrayService::Claude => self.claude_visible = visible,
-            TrayService::Codex => self.codex_visible = visible,
+            TrayService::Claude => self.claude_snapshot,
+            TrayService::Codex => self.codex_snapshot,
+            TrayService::Cursor => self.cursor_snapshot,
+            TrayService::Antigravity => self.antigravity_snapshot,
+        }
+    }
+
+    fn set_snapshot(&mut self, service: TrayService, snapshot: TraySnapshot) {
+        match service {
+            TrayService::Claude => self.claude_snapshot = Some(snapshot),
+            TrayService::Codex => self.codex_snapshot = Some(snapshot),
+            TrayService::Cursor => self.cursor_snapshot = Some(snapshot),
+            TrayService::Antigravity => self.antigravity_snapshot = Some(snapshot),
         }
     }
 }
@@ -62,6 +93,8 @@ pub struct TrayState {
 pub enum TrayService {
     Claude,
     Codex,
+    Cursor,
+    Antigravity,
 }
 
 impl TrayService {
@@ -69,6 +102,8 @@ impl TrayService {
         match self {
             Self::Claude => "Claude Code",
             Self::Codex => "Codex",
+            Self::Cursor => "Cursor",
+            Self::Antigravity => "Antigravity",
         }
     }
 
@@ -76,6 +111,8 @@ impl TrayService {
         match self {
             Self::Claude => "claude-tray",
             Self::Codex => "codex-tray",
+            Self::Cursor => "cursor-tray",
+            Self::Antigravity => "antigravity-tray",
         }
     }
 
@@ -83,6 +120,8 @@ impl TrayService {
         match self {
             Self::Claude => "claude-show",
             Self::Codex => "codex-show",
+            Self::Cursor => "cursor-show",
+            Self::Antigravity => "antigravity-show",
         }
     }
 
@@ -90,6 +129,8 @@ impl TrayService {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Cursor => "cursor",
+            Self::Antigravity => "antigravity",
         }
     }
 
@@ -97,6 +138,8 @@ impl TrayService {
         match self {
             Self::Claude => "claude-quit",
             Self::Codex => "codex-quit",
+            Self::Cursor => "cursor-quit",
+            Self::Antigravity => "antigravity-quit",
         }
     }
 
@@ -104,6 +147,8 @@ impl TrayService {
         match self {
             Self::Claude => tray_icon::TrayIconIdentity::Claude,
             Self::Codex => tray_icon::TrayIconIdentity::Codex,
+            Self::Cursor => tray_icon::TrayIconIdentity::Cursor,
+            Self::Antigravity => tray_icon::TrayIconIdentity::Antigravity,
         }
     }
 }
@@ -247,6 +292,8 @@ fn build_service_tray(app: &AppHandle, service: TrayService) -> tauri::Result<()
 }
 
 pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    build_service_tray(app, TrayService::Antigravity)?;
+    build_service_tray(app, TrayService::Cursor)?;
     build_service_tray(app, TrayService::Codex)?;
     build_service_tray(app, TrayService::Claude)?;
 
@@ -259,7 +306,7 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         });
     }
 
-    println!("[Tray] Ready: claude-tray and codex-tray created");
+    println!("[Tray] Ready: claude/codex/cursor/antigravity trays created");
     Ok(())
 }
 
@@ -271,12 +318,18 @@ pub async fn update_tray_icon(
     visible: bool,
 ) -> Result<(), String> {
     let runtime = tray_state.runtime.clone();
+    let snapshot = TraySnapshot {
+        percentage: percentage.map(|value| value.min(100)),
+        visible,
+    };
     let request_generation = {
         let mut state = runtime
             .lock()
             .map_err(|_| "failed to lock tray runtime state".to_string())?;
+        if state.snapshot(service) == Some(snapshot) {
+            return Ok(());
+        }
         let generation = state.bump_generation(service);
-        state.set_visible(service, visible);
         generation
     };
 
@@ -304,6 +357,14 @@ pub async fn update_tray_icon(
                     )))
                     .map_err(|e| e.to_string())?;
                     tray.set_visible(true).map_err(|e| e.to_string())?;
+                }
+                {
+                    let mut state = runtime
+                        .lock()
+                        .map_err(|_| "failed to lock tray runtime state".to_string())?;
+                    if state.generation(service) == request_generation {
+                        state.set_snapshot(service, snapshot);
+                    }
                 }
                 return Ok(());
             }
@@ -334,6 +395,15 @@ pub async fn update_tray_icon(
             )))
             .map_err(|e| e.to_string())?;
             tray.set_visible(true).map_err(|e| e.to_string())?;
+
+            {
+                let mut state = runtime
+                    .lock()
+                    .map_err(|_| "failed to lock tray runtime state".to_string())?;
+                if state.generation(service) == request_generation {
+                    state.set_snapshot(service, snapshot);
+                }
+            }
             Ok(())
         })();
 
@@ -347,7 +417,7 @@ pub async fn update_tray_icon(
 
 #[cfg(test)]
 mod tests {
-    use super::{format_tooltip, TrayService};
+    use super::{format_tooltip, TrayRuntimeState, TrayService, TraySnapshot};
 
     #[test]
     fn tooltip_marks_unavailable() {
@@ -363,5 +433,22 @@ mod tests {
             format_tooltip(TrayService::Codex, Some(130)),
             "Codex: 100% used"
         );
+    }
+
+    #[test]
+    fn runtime_snapshot_is_tracked_per_service() {
+        let mut state = TrayRuntimeState::default();
+        let snapshot = TraySnapshot {
+            percentage: Some(100),
+            visible: true,
+        };
+
+        assert_eq!(state.snapshot(TrayService::Claude), None);
+        assert_eq!(state.snapshot(TrayService::Codex), None);
+
+        state.set_snapshot(TrayService::Claude, snapshot);
+
+        assert_eq!(state.snapshot(TrayService::Claude), Some(snapshot));
+        assert_eq!(state.snapshot(TrayService::Codex), None);
     }
 }

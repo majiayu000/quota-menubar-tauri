@@ -11,6 +11,8 @@ const BADGE_BORDER: Rgba<u8> = Rgba([255, 255, 255, 235]);
 const BADGE_TEXT: Rgba<u8> = Rgba([255, 255, 255, 255]);
 const CLAUDE_BADGE_BYTES: &[u8] = include_bytes!("../../icons/tray-badges/claude.png");
 const CODEX_BADGE_BYTES: &[u8] = include_bytes!("../../icons/tray-badges/codex.png");
+const CURSOR_BADGE_BYTES: &[u8] = include_bytes!("../../icons/tray-badges/cursor.png");
+const ANTIGRAVITY_BADGE_BYTES: &[u8] = include_bytes!("../../icons/tray-badges/antigravity.png");
 const LARGE_BADGE_OUTER_RADIUS: f32 = 11.2;
 const SMALL_BADGE_OUTER_RADIUS: f32 = 6.4;
 const LARGE_BADGE_BORDER_WIDTH: f32 = 1.2;
@@ -45,6 +47,8 @@ const DIGITS: [[u8; 5]; 10] = [
 pub enum TrayIconIdentity {
     Claude,
     Codex,
+    Cursor,
+    Antigravity,
 }
 
 fn draw_glyph(img: &mut RgbaImage, pattern: &[u8; 5], x: i32, y: i32, scale: u32, color: Rgba<u8>) {
@@ -98,6 +102,8 @@ fn badge_background(identity: TrayIconIdentity) -> Rgba<u8> {
     match identity {
         TrayIconIdentity::Claude => Rgba([217, 119, 87, 255]),
         TrayIconIdentity::Codex => Rgba([17, 24, 39, 255]),
+        TrayIconIdentity::Cursor => Rgba([55, 65, 81, 255]),
+        TrayIconIdentity::Antigravity => Rgba([66, 133, 244, 255]),
     }
 }
 
@@ -110,10 +116,16 @@ fn decode_badge(bytes: &[u8]) -> RgbaImage {
 fn badge_source(identity: TrayIconIdentity) -> &'static RgbaImage {
     static CLAUDE_BADGE: OnceLock<RgbaImage> = OnceLock::new();
     static CODEX_BADGE: OnceLock<RgbaImage> = OnceLock::new();
+    static CURSOR_BADGE: OnceLock<RgbaImage> = OnceLock::new();
+    static ANTIGRAVITY_BADGE: OnceLock<RgbaImage> = OnceLock::new();
 
     match identity {
         TrayIconIdentity::Claude => CLAUDE_BADGE.get_or_init(|| decode_badge(CLAUDE_BADGE_BYTES)),
         TrayIconIdentity::Codex => CODEX_BADGE.get_or_init(|| decode_badge(CODEX_BADGE_BYTES)),
+        TrayIconIdentity::Cursor => CURSOR_BADGE.get_or_init(|| decode_badge(CURSOR_BADGE_BYTES)),
+        TrayIconIdentity::Antigravity => {
+            ANTIGRAVITY_BADGE.get_or_init(|| decode_badge(ANTIGRAVITY_BADGE_BYTES))
+        }
     }
 }
 
@@ -195,7 +207,12 @@ fn draw_badge(img: &mut RgbaImage, identity: TrayIconIdentity) {
                     y,
                     blend_pixel(
                         *img.get_pixel(x, y),
-                        Rgba([fill[0], fill[1], fill[2], (fill[3] as f32 * inner_mask) as u8]),
+                        Rgba([
+                            fill[0],
+                            fill[1],
+                            fill[2],
+                            (fill[3] as f32 * inner_mask) as u8,
+                        ]),
                     ),
                 );
             }
@@ -207,7 +224,12 @@ fn draw_badge(img: &mut RgbaImage, identity: TrayIconIdentity) {
     } else {
         SMALL_BADGE_ICON_SIZE
     };
-    let resized = resize(badge_source(identity), icon_size, icon_size, FilterType::Triangle);
+    let resized = resize(
+        badge_source(identity),
+        icon_size,
+        icon_size,
+        FilterType::Triangle,
+    );
     let start_x = (center_x.round() as i32 - icon_size as i32 / 2).max(0);
     let start_y = (center_y.round() as i32 - icon_size as i32 / 2).max(0);
 
@@ -247,7 +269,7 @@ pub fn generate_tray_icon(
     let mut img: RgbaImage = ImageBuffer::new(size, size);
     let center = size as f32 / 2.0;
     let is_large = size >= 44;
-    let pct = used_percent.map(|value| value.min(99));
+    let pct = used_percent.map(|value| value.min(100));
     let (pr, pg, pb) = pct.map(usage_color).unwrap_or_else(neutral_color);
     let ring_width = if is_large {
         LARGE_RING_WIDTH
@@ -262,9 +284,8 @@ pub fn generate_tray_icon(
         };
     let inner_radius = outer_radius - ring_width;
     let start_angle = -std::f32::consts::FRAC_PI_2;
-    let progress_angle = pct.map(|value| {
-        start_angle + (2.0 * std::f32::consts::PI * (value as f32 / 100.0))
-    });
+    let progress_angle =
+        pct.map(|value| start_angle + (2.0 * std::f32::consts::PI * (value as f32 / 100.0)));
 
     for y in 0..size {
         for x in 0..size {
@@ -303,7 +324,13 @@ pub fn generate_tray_icon(
         let digit_w = GLYPH_WIDTH * scale;
         let digit_h = GLYPH_HEIGHT * scale;
         let spacing = if is_large { 2 } else { 1 };
-        let total_width = 2 * digit_w + spacing;
+        let digits: Vec<u8> = pct
+            .to_string()
+            .bytes()
+            .map(|digit| digit.saturating_sub(b'0'))
+            .collect();
+        let total_width =
+            digits.len() as u32 * digit_w + digits.len().saturating_sub(1) as u32 * spacing;
         let digit_offset_x = if is_large {
             LARGE_DIGIT_OFFSET_X
         } else {
@@ -316,15 +343,10 @@ pub fn generate_tray_icon(
         };
         let start_x = (((size as i32 - total_width as i32) / 2) + digit_offset_x).max(0);
         let start_y = (((size as i32 - digit_h as i32) / 2) + digit_offset_y).max(0);
-        draw_digit(&mut img, pct / 10, start_x, start_y, scale, BADGE_TEXT);
-        draw_digit(
-            &mut img,
-            pct % 10,
-            start_x + (digit_w + spacing) as i32,
-            start_y,
-            scale,
-            BADGE_TEXT,
-        );
+        for (index, digit) in digits.into_iter().enumerate() {
+            let x = start_x + index as i32 * (digit_w + spacing) as i32;
+            draw_digit(&mut img, digit, x, start_y, scale, BADGE_TEXT);
+        }
     }
 
     draw_badge(&mut img, identity);
@@ -352,6 +374,30 @@ mod tests {
         let claude = generate_tray_icon(TrayIconIdentity::Claude, Some(42), 44);
         let codex = generate_tray_icon(TrayIconIdentity::Codex, Some(42), 44);
         assert_ne!(claude, codex);
+    }
+
+    #[test]
+    fn tray_icon_distinguishes_full_usage_from_ninety_nine() {
+        let ninety_nine = generate_tray_icon(TrayIconIdentity::Claude, Some(99), 44);
+        let full = generate_tray_icon(TrayIconIdentity::Claude, Some(100), 44);
+        let over_limit = generate_tray_icon(TrayIconIdentity::Claude, Some(130), 44);
+
+        assert_ne!(ninety_nine, full);
+        assert_eq!(full, over_limit);
+    }
+
+    #[test]
+    #[ignore]
+    fn dump_production_tray_icons() {
+        for (id, name) in [
+            (TrayIconIdentity::Claude, "claude"),
+            (TrayIconIdentity::Codex, "codex"),
+            (TrayIconIdentity::Cursor, "cursor"),
+            (TrayIconIdentity::Antigravity, "antigravity"),
+        ] {
+            let bytes = generate_tray_icon(id, Some(65), 44);
+            std::fs::write(format!("/tmp/tray_{}.png", name), &bytes).unwrap();
+        }
     }
 
     #[test]

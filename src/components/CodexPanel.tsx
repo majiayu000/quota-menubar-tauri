@@ -1,7 +1,8 @@
-import { useEffect, useState, useCallback, type CSSProperties } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { backend } from '../services/backend';
 import CostSummarySection from './CostSummarySection';
 import type { CodexData, CodexRateLimits, CodexStats } from '../types/models';
+import { formatPlanType, getProgressStyle } from '../utils/quota_format';
 
 interface CodexPanelProps {
   onConnectionChange?: (connected: boolean) => void;
@@ -9,11 +10,6 @@ interface CodexPanelProps {
   autoRefreshIntervalMs?: number;
   manualRefreshNonce?: number;
   onLoadingChange?: (loading: boolean) => void;
-}
-
-function formatPlanType(planType?: string): string {
-  if (!planType) return 'Unknown';
-  return planType.charAt(0).toUpperCase() + planType.slice(1);
 }
 
 function formatSubscriptionDate(dateStr?: string): string {
@@ -51,28 +47,18 @@ function formatResetTime(resetAt?: number): string {
 
   if (diffMs <= 0) return 'now';
 
-  const diffMinutes = Math.round(diffMs / 60000);
+  const diffMinutes = Math.max(1, Math.floor(diffMs / 60000));
   if (diffMinutes < 60) return `${diffMinutes}m`;
 
-  const diffHours = Math.round(diffMinutes / 60);
-  if (diffHours < 24) return `${diffHours}h`;
+  const diffHours = Math.floor(diffMinutes / 60);
+  const remainingMinutes = diffMinutes % 60;
+  if (diffHours < 24) {
+    return remainingMinutes > 0 ? `${diffHours}h ${remainingMinutes}m` : `${diffHours}h`;
+  }
 
-  const diffDays = Math.round(diffHours / 24);
-  return `${diffDays}d`;
-}
-
-function getProgressColor(usedPercent: number): string {
-  if (usedPercent >= 90) return '#ef4444';
-  if (usedPercent >= 75) return '#f59e0b';
-  return '#22c55e';
-}
-
-function getProgressStyle(usedPercent: number): CSSProperties {
-  const clamped = Math.min(Math.max(usedPercent, 0), 100);
-  return {
-    '--progress-color': getProgressColor(usedPercent),
-    '--progress-scale': String(clamped / 100),
-  } as CSSProperties;
+  const diffDays = Math.floor(diffHours / 24);
+  const remainingHours = diffHours % 24;
+  return remainingHours > 0 ? `${diffDays}d ${remainingHours}h` : `${diffDays}d`;
 }
 
 function getTrayUsedPercent(limits: CodexRateLimits): number | null {
@@ -187,7 +173,7 @@ export default function CodexPanel({
             <div className="section">
               <div className="section-title">
                 USAGE
-                <span className="plan-tag">{formatPlanType(planType)}</span>
+                <span className="plan-tag">Codex {formatPlanType(planType)}</span>
               </div>
 
               {rateLimits?.primary && (

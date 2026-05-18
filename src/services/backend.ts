@@ -1,14 +1,16 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  AntigravityData,
   CodexData,
   CodexRateLimits,
   CodexStats,
   CostOverview,
   CostSource,
+  CursorData,
   QuotaData,
 } from '../types/models';
 
-type TrayService = 'claude' | 'codex';
+type TrayService = 'claude' | 'codex' | 'cursor' | 'antigravity';
 
 export const backend = {
   getQuota() {
@@ -27,6 +29,14 @@ export const backend = {
     return invoke<CodexRateLimits>('get_codex_rate_limits');
   },
 
+  getCursorInfo() {
+    return invoke<CursorData>('get_cursor_info');
+  },
+
+  getAntigravityInfo() {
+    return invoke<AntigravityData>('get_antigravity_info');
+  },
+
   getCostOverview(source: CostSource, force = false) {
     return invoke<CostOverview>('get_cost_overview', {
       source,
@@ -42,6 +52,14 @@ export const backend = {
 
   openCodexDashboard() {
     return invoke<void>('open_codex_dashboard');
+  },
+
+  openCursorDashboard() {
+    return invoke<void>('open_cursor_dashboard');
+  },
+
+  openAntigravityDashboard() {
+    return invoke<void>('open_antigravity_dashboard');
   },
 
   updateTrayIcon(service: TrayService, percentage: number | null, visible: boolean) {
