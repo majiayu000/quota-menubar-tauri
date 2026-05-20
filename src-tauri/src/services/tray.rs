@@ -349,14 +349,13 @@ pub async fn update_tray_icon(
 
             if !visible {
                 if let Some(tray) = app_handle.tray_by_id(service.tray_id()) {
-                    tray.set_icon(None).map_err(|e| e.to_string())?;
+                    tray.set_visible(false).map_err(|e| e.to_string())?;
                     tray.set_tooltip(Some(format!(
                         "{}: {}",
                         service.label(),
                         TRAY_HIDDEN_TOOLTIP_SUFFIX
                     )))
                     .map_err(|e| e.to_string())?;
-                    tray.set_visible(true).map_err(|e| e.to_string())?;
                 }
                 {
                     let mut state = runtime
